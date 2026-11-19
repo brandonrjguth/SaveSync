@@ -107,12 +107,19 @@ class Handler(BaseHTTPRequestHandler):
                     self.server.transfers.share_library_game_if_active(result["id"])
                 return result
 
+            cloud = self.server.transfers.cloud
+
+            def device_status():
+                connection = cloud.refresh_index()
+                return self.server.transfers.library_status() | {"cloud": connection}
+
             actions = {
-                "/api/state": lambda: self.server.transfers.library_status(),
+                "/api/state": device_status,
                 "/api/settings": lambda: library.settings(data),
                 "/api/map": map_and_share,
-                "/api/review": lambda: library.review(data["id"]),
-                "/api/sync": lambda: {"message": library.sync(data)},
+                "/api/review": lambda: cloud.review(data["id"]),
+                "/api/sync": lambda: {"message": cloud.sync(data)},
+                "/api/cloud": lambda: cloud.action(data),
                 "/api/recover": lambda: {"message": library.recover(data["id"])},
                 "/api/discover": lambda: {"results": self.server.transfers.discover_saves(data)},
                 "/api/detect_save": lambda: self.server.transfers.detect_save_location(data),

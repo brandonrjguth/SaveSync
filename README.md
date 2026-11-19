@@ -21,10 +21,18 @@ SaveSync opens in its own window using Chrome, Chromium, Edge, Brave, or Firefox
 
 ## Connect your devices
 
+### Cloud saves
+
+1. Open **Settings > Cloud saves** on the first device. Enter your server's HTTPS URL and the bootstrap code from its administrator.
+2. Select **Pair another device** to generate a single-use code. On the Deck or Android, enter the same HTTPS URL and that code. The code expires after 10 minutes. Each device keeps its pairing across restarts.
+3. After playing, close the game and select **Upload save** under its title. On the next device, open the same game entry and choose **Use latest from another device**, or pick any timestamped snapshot in **Save history**. Map the local save path first if needed. Choosing a historical version makes it the active cloud version and keeps the other versions available.
+
+### Shared-folder saves
+
 1. Create a folder for your shared library. In SaveSync **Settings** on each device, enter its path to the same mounted network folder or to a local copy mirrored by your file-sync provider. On the Deck, that path must also be accessible in Gaming Mode. For a mirrored folder, keep its files available offline and let transfers finish before switching devices. SaveSync stores snapshots under `SaveSync-v1`.
 2. To find save locations, SaveSync uses [Ludusavi](https://github.com/mtkennerly/ludusavi/releases/latest). Select **Download Ludusavi** in Settings, or the download button shown while adding a game, and SaveSync downloads and sets it up automatically on Windows and Steam Deck. To use a copy you already have, point **Settings > Ludusavi executable** at it or put it on your PATH. SaveSync uses Ludusavi's preview scan and existing scan configuration. Manual paths work without it.
 
-## Find and sync a game
+## Find and sync a game using a shared folder
 
 1. On the device with the progress you want, make a save in the game and close it. In SaveSync, select **Add game**, enter the title and, on Windows, optionally the game's install folder — it is remembered for transfers to a Steam Deck. The save location is detected automatically when Ludusavi is set up, and you can confirm or change it. If detection finds nothing, enter the path manually. **Find saves** scans by exact store title, or all detected games, and lists each dedicated save folder or single save file to choose from.
 2. Use **Upload saves**. On the other device, select **Refresh** in SaveSync once the shared folder has finished transferring. Select the existing library entry and map its local save path with **Find local saves** or **Enter path**. For a new device with no saves, you can enter the destination path even if it does not exist yet.
@@ -43,7 +51,7 @@ If a title already uses Steam Cloud and you want SaveSync to manage its progress
 
 ## Transfer a Windows game to the Deck
 
-This copies a portable Windows game folder to the Deck over your local network. SaveSync verifies each file before making the installation available. Game files travel directly from the PC. Linked saves continue to use the shared save folder configured on both devices.
+This copies a portable Windows game folder to the Deck over your local network. SaveSync verifies each file before making the installation available. If paired to a cloud server, use **Game library** for saves after installing the game.
 
 ### One-time Steam setup
 
@@ -56,7 +64,9 @@ Install [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader#install
 3. On the Deck, open SaveSync and select **Game transfer**. SaveSync automatically finds your PC on the local network (or you can expand **Can’t find your PC? Enter IP manually** if your router blocks local discovery). Type the 6-character pairing code shown on Windows and choose **Connect to PC**. Keep the code private; after 5 wrong guesses the session locks until you start a new one.
 4. Choose an install folder and select **Download** next to the game. Leave **Add to Steam with Proton Experimental** selected. Keep the PC's SaveSync window open until the transfer finishes. If the executable was left blank on the PC, SaveSync lists the downloaded game's executables: pick one and the Steam shortcut is queued. The new entry appears under **Library > Non-Steam**. If Steam setup needs attention, use the SaveSync Bridge panel in Decky's Quick Access menu.
 
-SaveSync can map a linked save location automatically when it lives under the game folder or under Windows Documents, Saved Games, or AppData. If the same shared save library is already available on the Deck, SaveSync pulls the current snapshot during setup. When you use **Find local saves** for a transferred game on the Deck, the scan starts by itself and pre-fills the game's Proton prefix. For a custom location, map the local path in **Game library**. Select **Retry setup** in **Game transfer** if the shared save library was still arriving. Later uploads and downloads still happen on demand from **Game library** with the game closed.
+The Deck remembers the PC from the first short-code pairing and reconnects when you open **Game transfer** while the PC is sharing. Use **Connect to saved PC** to retry. **Forget PC** clears the Deck's saved connection. On Windows, **Forget paired devices** revokes the local transfer credentials.
+
+SaveSync can map a linked save location automatically when it lives under the game folder or under Windows Documents, Saved Games, or AppData. After a transfer, use **Game library** to select a cloud save. If the game uses a different Proton prefix, use **Detect active save location**. For a custom location, map the local path in **Game library**. On installations using the older shared-folder workflow, **Retry setup** can apply a snapshot that arrived after the transfer.
 
 The game needs to be playable from its copied folder under Proton. Titles that require an installer, registry entries, launchers or DRM may need their original installation process. Ending the sharing session invalidates the connection code. Keep the bridge installed for automatic Steam registration of future downloads.
 
@@ -65,7 +75,7 @@ The game needs to be playable from its copied folder under Proton. Titles that r
 The Android workflow uses GameNative's **Export Files** and **Import Files** to move saves across its container boundary. SaveSync runs in [Termux](https://github.com/termux/termux-app#installation) using the same interface. Automatic discovery inside GameNative and background sync are not implemented.
 
 1. In Termux, run `pkg install python` and `termux-setup-storage`. Copy this project from Downloads to the Termux home folder, then run `python -m savesync --no-browser` from the project directory. Open the loopback address it prints in your Android browser.
-2. Use a file-sync provider that mirrors the shared library into an Android folder Termux can read and write. Enter that folder in SaveSync **Settings**. Create a separate staging location in shared storage for each game's save files. Keep it outside the shared library.
+2. Pair Termux SaveSync to the cloud server through **Settings > Cloud saves**, or configure a mirrored shared folder that Termux can read and write. Create a separate staging location in shared storage for each game's save files, outside the shared library.
 3. In a [GameNative build with file import and export](https://github.com/utkarshdalal/GameNative/releases), close the game. Export its saves to Downloads and copy the files into the staging location. For a directory entry, match the desktop save folder's relative layout. Map the corresponding desktop library entry to that staging folder or file.
 4. After playing on Android, export the current saves into staging before checking and uploading them. Before playing, download any newer version into staging, then import the files from there into the original GameNative container folder with **Replace existing files** enabled. If the downloaded snapshot removed a file, reconcile the old container copy manually. For a single file with a different name in the container, give the staging file the Android name.
 
@@ -73,4 +83,12 @@ The Android workflow uses GameNative's **Export Files** and **Import Files** to 
 
 - Local configuration and recovery ZIPs are under `%LOCALAPPDATA%\SaveSync` on Windows and `~/.local/share/savesync` on Linux and Termux by default. Use `--data-dir PATH` for another location. A Ludusavi copy downloaded by SaveSync is installed under the same folder in `tools/ludusavi`. The ZIP stores saved data under `files/`, and a single-file entry stores it as `files/save`.
 - Snapshots are capped at 20,000 files and 8 GiB of uncompressed data. Registry entries, links, and junctions within save locations are outside the file-sync workflow.
-- SaveSync currently runs on demand. It uses your existing folder transport and serves its interface only on the device running it. Keep the game closed during sync.
+- SaveSync saves and restores on demand. Keep the game closed while uploading or applying a version.
+
+## Host the cloud server
+
+The server is a private library for one household or other group of devices you trust. Run it with Python 3.10 or newer behind your existing HTTPS reverse proxy. Its HTTP backend binds to loopback on port 47836, with health available at `/health`.
+
+For a Linux systemd install, copy the `savesync` Python package into `/opt/savesync-cloud` and install `deploy/savesync-cloud.service`. Generate a high-entropy first-device code in `/etc/savesync-cloud/bootstrap` readable only by root. For example, use `python3 -c 'import secrets; print(secrets.token_urlsafe(32))'` and redirect it there with `umask 077`. Enable the service with `systemctl enable --now savesync-cloud` after `systemctl daemon-reload`. Point a dedicated Caddy site at `reverse_proxy 127.0.0.1:47836`, or use the equivalent for your proxy. The HTTPS URL is what clients enter in Settings.
+
+Back up `/var/lib/savesync-cloud` while the service is stopped to capture both the SQLite index and the save archives. Device tokens and single-use pairing codes are stored on the server as hashes.

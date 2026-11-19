@@ -6,6 +6,7 @@ import os
 import threading
 from pathlib import Path
 
+from .cloud_sync import CloudSync
 from .discovery import find_prefix_saves, observe_prefix_saves, scan_saves
 from .library import checked_id, clean_path, overlap
 from .snapshots import SaveError, path_kind, validate_names, write_json
@@ -62,8 +63,10 @@ def save_hint(library, key, game_root):
 class GameTransfers:
     def __init__(self, library):
         self.library = library
+        self.cloud = CloudSync(library)
         self.role = "host" if os.name == "nt" else "deck" if not os.environ.get("TERMUX_VERSION") else ""
-        self.host = Host(library.directory, library)
+        self.host = Host(library.directory, library, lambda: not self.cloud.config.is_file())
+        self.remembered_pc = library.directory / "lan-pc.json"
         self.session_invite = ""
         self.job = {}
         self.stopping = threading.Event()
@@ -152,10 +155,11 @@ class GameTransfers:
         return {"message": "Detected and linked the active save location. Review the save status before syncing."}
 
     def status(self):
-        result = {"role": self.role, "job": self.job.copy()}
+        result = {"role": self.role, "job": self.job.copy(), "cloud": self.cloud.config.is_file()}
         if self.role == "host":
             result.update(self.host.status())
         if self.role == "deck":
+            result["remembered_pc"] = self.remembered_pc.is_file()
             result["default_parent"] = str(Path.home() / "Games")
             result["installs"] = []
             for path in sorted(self.receipts.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
@@ -184,7 +188,7 @@ class GameTransfers:
     def action(self, action, data):
         if action == "status":
             return self.status()
-        if action in ("start", "stop", "scan", "share", "share_library", "remove"):
+        if action in ("start", "stop", "scan", "share", "share_library", "remove", "forget_devices"):
             self.only("host")
         else:
             self.only("deck")
@@ -195,6 +199,11 @@ class GameTransfers:
             if self.job.get("running"):
                 raise SaveError("Wait for the game folder scan to finish.")
             self.host.stop()
+        elif action == "forget_devices":
+            self.host.forget()
+        elif action == "forget_pc":
+            self.remembered_pc.unlink(missing_ok=True)
+            self.session_invite = ""
         elif action == "scan":
             sources, _ = game_files(self.source_path(data["folder"]), exclude=self.excluded_paths())
             return {"executables": [name for name in sorted(sources) if Path(name).suffix.lower() == ".exe"][:300]}
@@ -340,12 +349,20 @@ class GameTransfers:
             self.share_library_games({game_id})
 
     def connect(self, data):
+        if data.get("remembered"):
+            if not self.remembered_pc.is_file():
+                raise SaveError("Pair with the PC first.")
+            saved = json.loads(self.remembered_pc.read_bytes())
+            host = next((item for item in discover_hosts() if item.get("pin") == saved["pin"]), None)
+            endpoint = f"{host['address']}:{host['port']}" if host else saved["endpoint"]
+            invite = f"{endpoint}#{saved['pin']}#{saved['token']}"
+            result = self.connected(invite)
+            if endpoint != saved["endpoint"]:
+                write_json(self.remembered_pc, dict(saved, endpoint=endpoint))
+            return result
         raw_invite = str(data.get("invite") or "").strip()
         if "#" in raw_invite:
-            games = catalog(raw_invite)
-            self.session_invite = raw_invite
-            sync_result = self.sync_saves(raw_invite)
-            return {"games": games, "invite": raw_invite, "save_sync": sync_result}
+            return self.connected(raw_invite)
         code = str(data.get("code") or raw_invite).strip()
         address = str(data.get("address") or "").strip()
         raw_port = data.get("port")
@@ -369,17 +386,27 @@ class GameTransfers:
             address = hosts[0]["address"]
             port = hosts[0]["port"]
         invite = pair(address, code, port)
+        endpoint, pin, token = invite.split("#")
+        result = self.connected(invite)
+        write_json(self.remembered_pc, {"endpoint": endpoint, "pin": pin, "token": token})
+        return result
+
+    def connected(self, invite):
         games = catalog(invite)
         self.session_invite = invite
-        sync_result = self.sync_saves(invite)
-        return {"games": games, "invite": invite, "host": address, "save_sync": sync_result}
+        saves = self.sync_saves(invite) if not self.cloud.config.is_file() else None
+        return {"games": games, "invite": invite, "save_sync": saves}
 
     def sync_saves(self, invite=""):
+        if self.cloud.config.is_file():
+            raise SaveError("Sync saves from the game library using the cloud server.")
         active = (invite or self.session_invite).strip()
         if not active:
             raise SaveError("Connect to the PC first.")
         self.session_invite = active
         counts = sync_saves_lan(active, self.library)
+        if counts.get("disabled"):
+            return counts
         for path in sorted(self.receipts.glob("*.json")):
             try:
                 record = json.loads(path.read_bytes())
@@ -411,10 +438,11 @@ class GameTransfers:
 
         def install():
             manifest, _ = download(invite, key, parent, report, record_install)
-            try:
-                sync_saves_lan(invite, self.library)
-            except (SaveError, OSError, ValueError):
-                pass
+            if not self.cloud.config.is_file():
+                try:
+                    sync_saves_lan(invite, self.library)
+                except (SaveError, OSError, ValueError):
+                    pass
             message = "Game downloaded."
             if steam and not manifest["exe"]:
                 message = "Game downloaded. Choose its executable below to add it to Steam."
@@ -432,7 +460,7 @@ class GameTransfers:
         return rank_executables(exes)[:300]
 
     def finish(self, key, exe="", sync_lan=True):
-        if sync_lan and self.session_invite:
+        if sync_lan and self.session_invite and not self.cloud.config.is_file():
             try:
                 sync_saves_lan(self.session_invite, self.library)
             except (SaveError, OSError, ValueError):
@@ -494,6 +522,8 @@ class GameTransfers:
                 validate_names([hint["path"]], "directory")
                 root = target if hint["base"] == "game" else prefix / "pfx/drive_c/users/steamuser"
                 self.library.map_game({"id": key, "path": str(root / hint["path"]), "install": str(target)})
+            if self.cloud.config.is_file():
+                return "Save location linked. Choose a cloud save from the Game library."
             review = self.library.review(key)
             if review["status"] in ("download", "current"):
                 self.library.sync({"id": key, "token": review["token"], "choice": "auto"})

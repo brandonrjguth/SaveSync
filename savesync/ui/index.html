@@ -49,6 +49,7 @@
     <form id="settings-form">
       <div class="dialog-heading"><h2>Settings</h2><button type="button" data-close aria-label="Close">×</button></div>
       <label>Device name<input name="device" maxlength="80" required></label>
+      <div class="actions"><button type="button" id="cloud-settings-button">Cloud saves</button></div>
       <label>Shared folder<input name="shared" placeholder="Enter the local path to a shared or mirrored folder"></label>
       <p class="hint">Point each device to the same folder or to its local copy. Make snapshot files available offline if your provider supports it.</p>
       <label>Ludusavi executable<input name="ludusavi" placeholder="Leave blank to use Ludusavi from PATH"></label>
@@ -56,6 +57,26 @@
       <p class="hint">Ludusavi detects save locations automatically. SaveSync can download it for you, or point this field at a copy you already have.</p>
       <p class="form-error" role="alert" hidden></p>
       <footer><button type="button" data-close>Cancel</button><button class="primary" type="submit">Save settings</button></footer>
+    </form>
+  </dialog>
+  <dialog id="cloud-dialog" aria-labelledby="cloud-heading">
+    <form id="cloud-form">
+      <div class="dialog-heading"><h2 id="cloud-heading">Cloud saves</h2><button type="button" data-close aria-label="Close">×</button></div>
+      <div id="cloud-pair-fields" class="confirm-content">
+        <label>Server address<input name="url" type="url" placeholder="https://saves.example.com"></label>
+        <label>Pairing code<input name="code" type="password" autocomplete="off"></label>
+        <p class="hint">Use the first-device code from the server or generate a code on an already paired device.</p>
+      </div>
+      <div id="cloud-paired" class="confirm-content" hidden>
+        <p id="cloud-url"></p>
+        <div class="actions">
+          <button type="button" id="cloud-invite">Pair another device</button>
+          <button type="button" id="cloud-disconnect">Disconnect this device</button>
+        </div>
+        <label id="cloud-invite-field" hidden>Single-use pairing code (expires in 10 minutes)<input id="cloud-invite-code" readonly></label>
+      </div>
+      <p class="form-error" role="alert" hidden></p>
+      <footer><button type="button" data-close>Close</button><button id="cloud-pair" class="primary" type="submit">Pair this device</button></footer>
     </form>
   </dialog>
   <dialog id="map-dialog">
@@ -110,6 +131,7 @@
           <div class="actions">
             <button type="button" id="transfer-copy">Copy code</button>
             <button type="button" id="transfer-stop">End session</button>
+            <button type="button" id="transfer-forget-devices">Forget paired devices</button>
           </div>
           <div id="transfer-offers"></div>
           <details id="share-form-details">
@@ -128,6 +150,10 @@
         </div>
       </section>
       <section id="transfer-deck" class="confirm-content" hidden>
+        <div id="transfer-remembered" class="actions" hidden>
+          <button type="button" id="transfer-reconnect">Connect to saved PC</button>
+          <button type="button" id="transfer-forget-pc">Forget PC</button>
+        </div>
         <div class="panel-header">
           <div id="transfer-discovered" class="hint">Searching for a sharing PC on this network…</div>
           <button type="button" id="transfer-discover">Find PC</button>

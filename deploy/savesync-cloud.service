@@ -1,0 +1,23 @@
+[Unit]
+Description=SaveSync private cloud server
+After=network.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=savesync-cloud
+StateDirectoryMode=0700
+WorkingDirectory=/opt/savesync-cloud
+LoadCredential=bootstrap:/etc/savesync-cloud/bootstrap
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -m savesync.cloud_server --data-dir /var/lib/savesync-cloud --bootstrap-file %d/bootstrap
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

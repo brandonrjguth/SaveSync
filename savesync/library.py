@@ -4,6 +4,7 @@ import json
 import os
 import platform
 import socket
+import shutil
 import tempfile
 import uuid
 from pathlib import Path
@@ -252,12 +253,13 @@ class Library:
         pending = self.pending(game_id)
         if pending.is_file():
             return {"status": "interrupted", "versions": [], "count": 0, "token": ""}
-        _, _, versions, heads, current, status, token = self.inspect(self.state(), game_id)
+        game, _, versions, heads, current, status, token = self.inspect(self.state(), game_id)
         return {"status": status, "token": token, "count": len(current),
+                "content_token": fingerprint([game["path"], current]),
                 "versions": [version_summary(info, key in heads)
                              for key, info in sorted(versions.items(), key=lambda item: item[1]["created"], reverse=True)]}
 
-    def sync(self, data):
+    def sync(self, data, *, device_id=None):
         state = self.state()
         game_id = checked_id(data["id"])
         if self.save_detection(game_id).is_file():
@@ -281,6 +283,8 @@ class Library:
             if not current:
                 raise SaveError("This device has no save files to publish.")
             info = metadata(game, state["device"], heads, current)
+            if device_id:
+                info["device_id"] = device_id
             write_snapshot(folder, info, files_at(path, game["mode"]))
             message = "Published this device’s saves."
         else:
@@ -293,6 +297,8 @@ class Library:
                     replace_saves(path, game, current, info["files"], sources, pending, state["device"])
                     if heads != [choice]:
                         info = metadata(game, state["device"], heads, info["files"])
+                        if device_id:
+                            info["device_id"] = device_id
                         write_snapshot(folder, info, sources)
             message = "Saves are up to date." if status == "current" and choice == heads[0] else "Applied the selected saves."
         game["baseline"] = info["id"]
@@ -374,12 +380,10 @@ class Library:
             raise SaveError("Snapshot not found.")
         return path
 
-    def import_snapshot(self, game_info, snap_id, raw_bytes):
-        """Validate and store a snapshot .zip received over LAN."""
+    def register_snapshot_game(self, game_info):
         if not isinstance(game_info, dict):
             raise SaveError("Invalid game metadata.")
         game_id = checked_id(game_info.get("id", ""))
-        snap_id = checked_id(snap_id)
         title = str(game_info.get("title", "")).strip()[:160]
         mode = game_info.get("mode")
         if not title or mode not in ("file", "directory"):
@@ -390,17 +394,30 @@ class Library:
         game_file = folder / "game.json"
         if not game_file.is_file():
             write_json(game_file, {"id": game_id, "title": title, "mode": mode})
+        elif json.loads(game_file.read_bytes())["mode"] != mode:
+            raise SaveError("This game's snapshots use a different location type.")
         self._reconcile_title_mapping(store, game_id, title, mode)
+        return folder
+
+    def import_snapshot(self, game_info, snap_id, raw_bytes):
+        """Validate and store a snapshot .zip received over LAN."""
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / (checked_id(snap_id) + ".zip")
+            archive.write_bytes(raw_bytes)
+            return self.import_snapshot_file(game_info, archive)
+
+    def import_snapshot_file(self, game_info, archive):
+        game_id = checked_id(game_info["id"])
+        snap_id = checked_id(archive.stem)
+        info = read_snapshot(archive, game_id)
+        if info["mode"] != game_info["mode"]:
+            raise SaveError("Snapshot metadata did not match.")
+        folder = self.register_snapshot_game(game_info)
         target = folder / (snap_id + ".zip")
         if target.is_file():
             return False
-        with tempfile.TemporaryDirectory(dir=folder) as temp_dir:
-            staged = Path(temp_dir) / (snap_id + ".zip")
-            staged.write_bytes(raw_bytes)
-            info = read_snapshot(staged, game_id)
-            if info["id"] != snap_id or info["mode"] != mode:
-                raise SaveError("Snapshot metadata did not match.")
-            os.replace(staged, target)
+        with atomic_file(target) as staged:
+            shutil.copyfile(archive, staged)
         return True
 
     def _reconcile_title_mapping(self, store, game_id, title, mode):
@@ -409,7 +426,9 @@ class Library:
         if game_id in state["maps"] and state["maps"][game_id].get("path"):
             return
         for other_id, mapping in list(state["maps"].items()):
-            if other_id == game_id or mapping.get("title", "").casefold() != title.casefold():
+            if (other_id == game_id or mapping.get("title", "").casefold() != title.casefold()
+                    or (mapping.get("path") and mapping["mode"] != mode)
+                    or self.save_detection(other_id).is_file() or self.pending(other_id).is_file()):
                 continue
             other_folder = store / other_id
             other_zips = list(other_folder.glob("*.zip")) if other_folder.is_dir() else []
@@ -435,4 +454,6 @@ def checked_id(value):
 
 
 def version_summary(info, head):
-    return {key: info[key] for key in ("id", "device", "created")} | {"count": len(info["files"]), "head": head}
+    return {key: info[key] for key in ("id", "device", "created")} | {
+        "device_id": info.get("device_id"), "count": len(info["files"]), "head": head,
+    }

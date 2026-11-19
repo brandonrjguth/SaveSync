@@ -78,8 +78,11 @@ async function refresh(gameId = selected) {
   state = await api("state");
   selected = state.games.some((game) => game.id === gameId) ? gameId : state.games[0]?.id;
   $("device-label").textContent = state.device + " · " + state.platform;
-  $("shared-label").textContent = state.shared ? "Shared folder · " + state.shared : "Set a shared folder to connect your devices.";
+  $("shared-label").textContent = state.cloud?.paired
+    ? (state.cloud.online ? "Cloud saves connected · " : "Cloud saves unavailable · ") + state.cloud.url
+    : state.shared ? "Shared folder · " + state.shared : "Pair with a cloud server in Settings.";
   if (state.warning) notice(state.warning, true);
+  if (state.cloud?.warning) notice(state.cloud.warning, true);
   renderLibrary();
   await showGame();
 }
@@ -114,6 +117,21 @@ function openSettings() {
     }));
   }
   openDialog("settings-dialog");
+}
+
+function openCloudSettings() {
+  const form = $("cloud-form");
+  const paired = Boolean(state.cloud?.paired);
+  form.elements.url.value = state.cloud?.url || "";
+  form.elements.code.value = "";
+  $("cloud-pair-fields").hidden = paired;
+  $("cloud-paired").hidden = !paired;
+  $("cloud-pair").hidden = paired;
+  $("cloud-url").textContent = state.cloud?.url || "";
+  $("cloud-invite-field").hidden = true;
+  $("cloud-invite-code").value = "";
+  $("settings-dialog").close();
+  openDialog("cloud-dialog");
 }
 
 function ludusaviInstallButton(onReady) {
@@ -239,6 +257,10 @@ async function showGame() {
 }
 
 function renderReview(game, review, detail) {
+  if (review.cloud && review.status !== "interrupted") {
+    renderCloudHistory(game, review, detail);
+    return;
+  }
   const [title, description] = statuses[review.status];
   const problem = ["conflict", "interrupted"].includes(review.status);
   const status = element("div", "", "status-box" + (problem ? " attention" : ""));
@@ -287,6 +309,43 @@ function renderReview(game, review, detail) {
     history.append(element("summary", "Version history"), versions);
     detail.append(history);
   }
+}
+
+function renderCloudHistory(game, review, detail) {
+  const cloud = review.cloud;
+  const status = element("div", "", "status-box" + (cloud.error || cloud.conflict ? " attention" : ""));
+  const label = cloud.error ? "Cloud unavailable" : cloud.conflict ? "Different save versions found"
+    : cloud.current ? "Up to date with the cloud" : cloud.latest ? "Cloud save available" : "Ready for cloud saves";
+  status.append(element("h3", label));
+  if (cloud.error) status.append(element("p", cloud.error));
+  if (cloud.conflict) status.append(element("p", "Choose which progress to keep. The other versions stay in history."));
+  const actions = element("div", "", "actions");
+  const choose = (choice, message) => runAction(game, "sync", {
+    token: review.token, cloud_token: cloud.token, choice,
+  }, message);
+  const use = (id) => choose(id, "Close the game. Apply this save here and make it the active cloud version?");
+  if (review.count && !cloud.error) {
+    actions.append(button("Upload save", () => choose("local", "Close the game. Make this device’s save the active cloud version?"), "primary"));
+  }
+  if (cloud.other && !cloud.error) actions.append(button("Use latest from another device", () => use(cloud.other)));
+  actions.append(button("Check again", showGame));
+  detail.append(status, actions);
+
+  const history = element("section", "", "versions");
+  history.append(element("h3", "Save history"));
+  if (!review.versions.length) history.append(element("p", "No snapshots yet."));
+  for (const version of review.versions) {
+    const row = element("div", "", "version");
+    const description = element("div");
+    const name = version.device + (version.this_device ? " · This device" : "");
+    const location = version.uploaded ? (version.head ? "Cloud head" : "Cloud") : "Local snapshot";
+    description.append(element("strong", name), element("small", new Date(version.created).toLocaleString()
+      + " · " + location + " · " + version.count + (version.count === 1 ? " file" : " files")));
+    row.append(description);
+    if (!cloud.error) row.append(button("Use this save", () => use(version.id)));
+    history.append(row);
+  }
+  detail.append(history);
 }
 
 function confirmAction(message) {
@@ -376,6 +435,38 @@ document.querySelectorAll("[data-close]").forEach((node) => {
   node.addEventListener("click", () => node.closest("dialog").close());
 });
 $("settings-button").addEventListener("click", openSettings);
+$("cloud-settings-button").addEventListener("click", openCloudSettings);
+bindForm("cloud-form", async (data) => {
+  if (state.cloud?.paired) return;
+  const result = await api("cloud", { action: "pair", ...data });
+  $("cloud-form").elements.code.value = "";
+  $("cloud-dialog").close();
+  notice(result.message);
+  await refresh();
+});
+$("cloud-invite").addEventListener("click", async () => {
+  const form = $("cloud-form");
+  formError(form, "");
+  try {
+    const invite = await api("cloud", { action: "invite" });
+    $("cloud-invite-field").hidden = false;
+    $("cloud-invite-code").value = invite.code;
+    $("cloud-invite-code").select();
+  } catch (error) {
+    formError(form, error.message);
+  }
+});
+$("cloud-disconnect").addEventListener("click", async () => {
+  if (!window.confirm("Disconnect this device from the cloud library?")) return;
+  try {
+    const result = await api("cloud", { action: "disconnect" });
+    $("cloud-dialog").close();
+    notice(result.message);
+    await refresh();
+  } catch (error) {
+    formError($("cloud-form"), error.message);
+  }
+});
 $("exit-button").hidden = document.querySelector('meta[name="savesync-window"]').content !== "true";
 $("exit-button").addEventListener("click", async () => {
   if (busy) return;

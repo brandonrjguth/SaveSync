@@ -5,6 +5,7 @@ const transferCall = (action, data) => api("transfer/" + action, data);
 let transferTimer;
 let transferCatalog = [];
 let transferInvite = "";
+let lanSavesAvailable = false;
 let transferHosts = [];
 let transferInFlight = false;
 const exeChoices = {};
@@ -33,19 +34,27 @@ async function transferAction(action, data = {}) {
     const result = await transferCall(action, data);
     if (action === "connect") {
       transferInvite = result.invite || data.invite || "";
+      lanSavesAvailable = Boolean(result.save_sync && !result.save_sync.disabled);
       transferCatalog = result.games;
       renderCatalog();
       renderTransfer(await transferCall("status"));
       if (state) refresh().catch(() => {});
       const syncInfo = result.save_sync;
-      const syncNote = syncInfo && (syncInfo.pulled || syncInfo.pushed || syncInfo.applied)
-        ? " Saves synced with PC."
-        : " Saves checked with PC.";
+      const syncNote = lanSavesAvailable
+        ? (syncInfo.pulled || syncInfo.pushed || syncInfo.applied ? " Saves synced with PC." : " Saves checked with PC.")
+        : "";
       transferMessage((result.host ? "Connected to " + result.host + "." : "Connected to PC.") + syncNote);
     } else if (action === "sync_saves") {
       renderTransfer(await transferCall("status"));
       if (state) refresh().catch(() => {});
-      transferMessage("Saves synced with PC (" + (result.pulled || 0) + " downloaded, " + (result.pushed || 0) + " uploaded).");
+      transferMessage(result.disabled ? "The PC uses cloud saves. Open the Game library to access cloud saves."
+        : "Saves synced with PC (" + (result.pulled || 0) + " downloaded, " + (result.pushed || 0) + " uploaded).");
+    } else if (action === "forget_pc") {
+      transferInvite = "";
+      transferCatalog = [];
+      lanSavesAvailable = false;
+      $("transfer-catalog").replaceChildren();
+      renderTransfer(result);
     } else if (action === "scan") {
       replaceOptions($("transfer-exes"), result.executables.map((path) => [path, path]));
       if (result.executables.length === 1) $("share-form").elements.exe.value = result.executables[0];
@@ -87,8 +96,10 @@ function renderCatalog() {
   container.replaceChildren();
   if (transferInvite) {
     const syncBar = element("div", "", "panel-header");
-    syncBar.append(element("h3", "Connected PC"),
-      button("Sync saves with PC", () => transferAction("sync_saves", { invite: transferInvite })));
+    syncBar.append(element("h3", "Connected PC"));
+    if (lanSavesAvailable && !state?.cloud?.paired) {
+      syncBar.append(button("Sync saves with PC", () => transferAction("sync_saves", { invite: transferInvite })));
+    }
     container.append(syncBar);
   }
   if (!transferCatalog.length) container.append(element("p", "The PC has no shared games yet."));
@@ -229,6 +240,7 @@ function renderTransfer(transfer) {
     $("transfer-stop").disabled = Boolean(job.running);
     $("share-form").querySelector('[type="submit"]').disabled = Boolean(job.running);
   } else if (transfer.role === "deck") {
+    $("transfer-remembered").hidden = !transfer.remembered_pc;
     if (!$("install-folder").value) $("install-folder").value = transfer.default_parent;
     renderInstalls(transfer.installs);
     for (const control of $("transfer-catalog").querySelectorAll("button")) control.disabled = Boolean(job.running);
@@ -303,7 +315,11 @@ function openTransfer(game = null) {
   tickTransfers().then(() => {
     if (!transferStatus) return;
     if (transferStatus.role === "deck") {
-      discoverTransferHosts();
+      if (transferStatus.remembered_pc) {
+        transferAction("connect", { remembered: true });
+      } else {
+        discoverTransferHosts();
+      }
     } else if (transferStatus.role === "host" && transferStatus.code && game && game.install
       && !transferStatus.job?.running && !transferStatus.games.some((item) => item.title === game.title)) {
       transferAction("share_library", { id: game.id });
@@ -343,6 +359,11 @@ $("transfer-connect-form").addEventListener("submit", (event) => {
 });
 $("transfer-discover").addEventListener("click", () => discoverTransferHosts());
 $("transfer-stop").addEventListener("click", () => transferAction("stop"));
+$("transfer-reconnect").addEventListener("click", () => transferAction("connect", { remembered: true }));
+$("transfer-forget-pc").addEventListener("click", () => transferAction("forget_pc"));
+$("transfer-forget-devices").addEventListener("click", async () => {
+  if (window.confirm("Forget all devices paired for local game transfers?")) await transferAction("forget_devices");
+});
 $("transfer-scan").addEventListener("click", () => transferAction("scan", {
   folder: $("share-form").elements.folder.value,
 }));

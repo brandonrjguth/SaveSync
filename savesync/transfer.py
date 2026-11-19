@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from .library import checked_id, clean_path, overlap
-from .snapshots import HASH, SaveError, digest_stream, encode, fingerprint, path_kind, validate_names
+from .snapshots import HASH, SaveError, atomic_file, digest_stream, encode, fingerprint, path_kind, validate_names, write_json
 
 PORT = 47835
 MAX_MANIFEST = 32 * 1024**2
@@ -154,22 +154,24 @@ def tls_server(directory, address):
     except ImportError as error:
         raise SaveError("The PC transfer host needs the cryptography Python package. "
                         "Run the SaveSync installer, or install it with: python -m pip install cryptography") from error
-    key = ec.generate_private_key(ec.SECP256R1())
-    now = datetime.now(timezone.utc)
-    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "SaveSync LAN")])
-    certificate = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
-                   .public_key(key.public_key()).serial_number(x509.random_serial_number())
-                   .not_valid_before(now - timedelta(minutes=1)).not_valid_after(now + timedelta(days=7))
-                   .add_extension(x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address(address))]),
-                                  critical=False).sign(key, hashes.SHA256()))
-    with tempfile.TemporaryDirectory(dir=directory) as temp:
-        combined = Path(temp) / "identity.pem"
-        combined.write_bytes(certificate.public_bytes(serialization.Encoding.PEM) +
-                             key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
-                                               serialization.NoEncryption()))
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        context.minimum_version = ssl.TLSVersion.TLSv1_2
-        context.load_cert_chain(combined)
+    combined = directory / "lan-identity.pem"
+    if not combined.is_file():
+        key = ec.generate_private_key(ec.SECP256R1())
+        now = datetime.now(timezone.utc)
+        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "SaveSync LAN")])
+        certificate = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
+                       .public_key(key.public_key()).serial_number(x509.random_serial_number())
+                       .not_valid_before(now - timedelta(minutes=1)).not_valid_after(now + timedelta(days=3650))
+                       .add_extension(x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address(address))]),
+                                      critical=False).sign(key, hashes.SHA256()))
+        with atomic_file(combined) as target:
+            target.write_bytes(certificate.public_bytes(serialization.Encoding.PEM) +
+                               key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                                 serialization.NoEncryption()))
+    certificate = x509.load_pem_x509_certificate(combined.read_bytes())
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(combined)
     return context, certificate.fingerprint(hashes.SHA256()).hex()
 
 
@@ -201,14 +203,19 @@ class LANHandler(BaseHTTPRequestHandler):
     def send_json(self, data, status=200):
         self.send_body(encode(data), "application/json", status=status)
 
+    def authorized(self):
+        scheme, _, token = self.headers.get("Authorization", "").partition(" ")
+        return (scheme == "Bearer" and is_hex(token, 48)
+                and (hmac.compare_digest(token, self.server.secret)
+                     or hashlib.sha256(token.encode()).hexdigest() in self.server.pairings))
+
     def do_POST(self):
         server = self.server
         if server.stopped.is_set() or self.headers.get("Host") != server.peer:
             self.send_error(403)
             return
         if self.path.startswith("/v1/saves/"):
-            auth = self.headers.get("Authorization", "").encode("utf-8")
-            if not hmac.compare_digest(auth, b"Bearer " + server.secret.encode()) or server.library is None:
+            if not self.authorized() or not server.saves_enabled():
                 self.send_error(403)
                 return
             parts = self.path.split("/")
@@ -295,14 +302,19 @@ class LANHandler(BaseHTTPRequestHandler):
             return
         with server.lock:
             server.failed_pairs = 0
-            token = server.secret
+            if len(server.pairings) >= 128:
+                self.send_json({"error": "Forget old pairings on the PC first."}, status=409)
+                return
+            token = secrets.token_hex(24)
+            pairings = server.pairings | {hashlib.sha256(token.encode()).hexdigest()}
+            write_json(server.pairings_file, sorted(pairings))
+            server.pairings = pairings
         self.send_json({"proof": pair_proof(key, b"server"), "token": token})
 
     def do_GET(self):
         server = self.server
-        auth = self.headers.get("Authorization", "").encode("utf-8")
         if (server.stopped.is_set() or self.headers.get("Host") != server.peer
-                or not hmac.compare_digest(auth, b"Bearer " + server.secret.encode())):
+                or not self.authorized()):
             self.send_error(403)
             return
 
@@ -316,8 +328,8 @@ class LANHandler(BaseHTTPRequestHandler):
             return
 
         if self.path == "/v1/saves":
-            if server.library is None:
-                self.send_body(encode([]), "application/json")
+            if not server.saves_enabled():
+                self.send_json({"disabled": True})
                 return
             with server.lock:
                 entries = server.library.list_store_snapshots()
@@ -325,7 +337,7 @@ class LANHandler(BaseHTTPRequestHandler):
             return
 
         parts = self.path.split("/")
-        if len(parts) == 5 and parts[:3] == ["", "v1", "saves"] and server.library is not None:
+        if len(parts) == 5 and parts[:3] == ["", "v1", "saves"] and server.saves_enabled():
             try:
                 snap_file = server.library.snapshot_path(parts[3], parts[4])
                 data = snap_file.read_bytes()
@@ -378,7 +390,7 @@ class LANHandler(BaseHTTPRequestHandler):
 
 
 class DiscoveryResponder:
-    def __init__(self, address, server_port, listen_port=PORT):
+    def __init__(self, address, server_port, listen_port=PORT, pin=""):
         self.stopped = threading.Event()
         self.payload = encode({
             "app": "SaveSync",
@@ -386,6 +398,7 @@ class DiscoveryResponder:
             "name": socket.gethostname()[:120],
             "address": address,
             "port": server_port,
+            "pin": pin,
         })
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -455,7 +468,8 @@ def discover_hosts(port=PORT, timeout=1.2):
                 if not 1 <= host_port <= 65535:
                     continue
                 name = str(info.get("name") or address)[:120]
-                hosts[(address, host_port)] = {"name": name, "address": address, "port": host_port}
+                hosts[(address, host_port)] = {"name": name, "address": address, "port": host_port,
+                                               "pin": info.get("pin")}
             except (ValueError, TypeError, SaveError):
                 continue
     finally:
@@ -464,11 +478,13 @@ def discover_hosts(port=PORT, timeout=1.2):
 
 
 class Host:
-    def __init__(self, directory, library=None):
+    def __init__(self, directory, library=None, saves_enabled=None):
         self.directory = directory
         self.library = library
         self.server = None
         self.discovery = None
+        self.saves_enabled = saves_enabled or (lambda: library is not None)
+        self.pairings_file = directory / "lan-pairings.json"
 
     def status(self):
         server = self.server
@@ -486,6 +502,7 @@ class Host:
             raise SaveError("Stop the current LAN share first.")
         address = lan_address(address)
         context, pin = tls_server(self.directory, address)
+        pairings = set(json.loads(self.pairings_file.read_bytes())) if self.pairings_file.is_file() else set()
         try:
             server = LANServer((address, port), LANHandler)
         except OSError as error:
@@ -493,6 +510,9 @@ class Host:
         code = generate_pair_code()
         server.context = context
         server.library = self.library
+        server.saves_enabled = self.saves_enabled
+        server.pairings = pairings
+        server.pairings_file = self.pairings_file
         server.address = address
         server.peer = f"{address}:{server.server_port}"
         server.pin = pin
@@ -510,8 +530,20 @@ class Host:
         self.discovery = DiscoveryResponder(
             address, server.server_port,
             PORT if discovery_port is None and port == PORT else (discovery_port or server.server_port),
+            pin=pin,
         )
         threading.Thread(target=server.serve_forever, name="SaveSync LAN host", daemon=True).start()
+
+    def forget(self):
+        server = self.server
+        if server is None:
+            self.pairings_file.unlink(missing_ok=True)
+            return
+        with server.lock:
+            self.pairings_file.unlink(missing_ok=True)
+            server.pairings = set()
+            server.secret = secrets.token_hex(24)
+            server.invite = f"{server.peer}#{server.pin}#{server.secret}"
 
     def add(self, root, manifest):
         server = self.server
@@ -651,14 +683,15 @@ class LANClient(http.client.HTTPSConnection):
 
 def sync_saves_lan(invite, library):
     """Two-way save snapshot sync between the Steam Deck and the PC over LAN."""
-    library.auto_publish_all()
-    local_before = {entry["game"]["id"]: set(entry["snapshots"]) for entry in library.list_store_snapshots()}
     pulled = 0
     pushed = 0
     with closing(LANClient(invite)) as client:
         remote_list = client.get_json("/v1/saves")
+        if remote_list == {"disabled": True}:
+            return {"pulled": 0, "pushed": 0, "disabled": True}
         if not isinstance(remote_list, list):
             raise SaveError("The PC returned an invalid save catalog.")
+        local_before = {entry["game"]["id"]: set(entry["snapshots"]) for entry in library.list_store_snapshots()}
         remote_map = {}
         for item in remote_list:
             if not isinstance(item, dict) or not isinstance(item.get("game"), dict):
