@@ -17,6 +17,7 @@ from pathlib import Path
 
 from .discovery import find_ludusavi, install_ludusavi
 from . import automation
+from .controller import open_controller
 from .game_transfers import GameTransfers
 from .library import Library, checked_id, data_home
 from .snapshots import SaveError, write_json
@@ -130,6 +131,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/":
             content = content.replace("__SESSION_TOKEN__", self.server.token)
             content = content.replace("__WINDOW_MODE__", str(self.server.window_mode).lower())
+            content = content.replace("__NATIVE_CONTROLLER__", str(getattr(self.server, "controller", None) is not None).lower())
         self.reply(200, content.encode(), content_type)
 
     def do_POST(self):
@@ -147,6 +149,10 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(size))
             if not isinstance(data, dict):
                 raise SaveError("Invalid request data.")
+            if self.path == "/api/controller":
+                controller = getattr(self.server, "controller", None)
+                self.json_reply(200, controller.poll() if controller is not None else {"connected": False})
+                return
             library = self.server.library
             def map_and_share():
                 result = library.map_game(data)
@@ -170,6 +176,7 @@ class Handler(BaseHTTPRequestHandler):
                 "/api/automation": lambda: automation.action(library, data["id"], data["action"]),
                 "/api/shortcut": lambda: automation.create_shortcut(library, data),
                 "/api/browse-executable": lambda: automation.browse_executable(library, data["id"]),
+                "/api/browse-game-folder": lambda: automation.browse_game_folder(data["folder"]),
                 "/api/recover": lambda: {"message": library.recover(data["id"])},
                 "/api/discover": lambda: {"results": self.server.transfers.discover_saves(data)},
                 "/api/detect_save": lambda: self.server.transfers.detect_save_location(data),
@@ -245,6 +252,7 @@ def main(window_default=False):
     window_mode = args.window or (window_default and not args.no_browser)
     log_path = library.directory / "window.log"
     transfers = GameTransfers(library)
+    controller = open_controller() if window_mode else None
     try:
         with local_service(library, args.port) as server:
             server.socket.settimeout(None)
@@ -252,6 +260,7 @@ def main(window_default=False):
             server.library = library
             server.transfers = transfers
             server.window_mode = window_mode
+            server.controller = controller
             server.exit_requested = False
             server.log = sys.stderr
             url = "http://" + server.host + "/"
@@ -295,6 +304,8 @@ def main(window_default=False):
             return 1
         raise
     finally:
+        if controller is not None:
+            controller.close()
         transfers.close()
 
 

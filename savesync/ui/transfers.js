@@ -11,6 +11,7 @@ let transferInFlight = false;
 const exeChoices = {};
 const exeSelected = {};
 const exeLoading = {};
+let installsSignature;
 
 function formatBytes(bytes) {
   if (!bytes) return "0 B";
@@ -130,6 +131,9 @@ function loadExeChoices(gameId) {
 }
 
 function renderInstalls(installs) {
+  const signature = JSON.stringify(installs.map((game) => [game, exeChoices[game.id], Boolean(exeLoading[game.id])]));
+  if (signature === installsSignature) return;
+  installsSignature = signature;
   const container = $("transfer-installs");
   container.replaceChildren();
   if (!installs.length) return;
@@ -299,17 +303,11 @@ async function tickTransfers() {
   }
 }
 
-function openTransfer(game = null) {
+function openTransfer() {
   transferMessage("");
   if (state) {
     const entries = state.games.filter((item) => item.path).map((item) => [item.id, item.title]);
     replaceOptions($("transfer-save"), [["", "None"], ...entries]);
-    if (game) {
-      const share = $("share-form").elements;
-      share.title.value = game.title || "";
-      share.folder.value = game.install || "";
-      if (game.path) $("transfer-save").value = game.id;
-    }
   }
   transferDialog.showModal();
   tickTransfers().then(() => {
@@ -320,9 +318,6 @@ function openTransfer(game = null) {
       } else {
         discoverTransferHosts();
       }
-    } else if (transferStatus.role === "host" && transferStatus.code && game && game.install
-      && !transferStatus.job?.running && !transferStatus.games.some((item) => item.title === game.title)) {
-      transferAction("share_library", { id: game.id });
     }
   });
   transferTimer = setInterval(tickTransfers, 1000);
@@ -367,6 +362,27 @@ $("transfer-forget-devices").addEventListener("click", async () => {
 $("transfer-scan").addEventListener("click", () => transferAction("scan", {
   folder: $("share-form").elements.folder.value,
 }));
+$("transfer-browse").addEventListener("click", async () => {
+  if (transferInFlight) return;
+  const browse = $("transfer-browse");
+  const fields = $("share-form").elements;
+  transferInFlight = true;
+  browse.disabled = true;
+  transferMessage("");
+  try {
+    const { path } = await api("browse-game-folder", { folder: fields.folder.value });
+    if (path && path !== fields.folder.value) {
+      fields.folder.value = path;
+      fields.exe.value = "";
+      $("transfer-exes").replaceChildren();
+    }
+  } catch (error) {
+    transferMessage(error.message, true);
+  } finally {
+    browse.disabled = false;
+    transferInFlight = false;
+  }
+});
 $("transfer-copy").addEventListener("click", async () => {
   const code = $("transfer-code").textContent.trim();
   try {

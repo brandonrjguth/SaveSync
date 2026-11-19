@@ -4,7 +4,6 @@ const $ = (id) => document.getElementById(id);
 const session = document.querySelector('meta[name="savesync-token"]').content;
 let state;
 let selected;
-let scanTarget;
 let reviewRequest = 0;
 let busy = false;
 let transferStatus = null;
@@ -20,6 +19,13 @@ function button(label, action, className) {
   const node = element("button", label, className);
   node.type = "button";
   node.addEventListener("click", action);
+  return node;
+}
+
+function iconButton(icon, label, action) {
+  const node = button(icon, action, "icon-button");
+  node.setAttribute("aria-label", label);
+  node.title = label;
   return node;
 }
 
@@ -89,6 +95,7 @@ async function refresh(gameId = selected) {
 
 function renderLibrary() {
   const list = $("games");
+  const focused = document.activeElement?.dataset.game;
   list.replaceChildren();
   if (!state.games.length) list.append(element("p", "No games added yet."));
   for (const game of state.games) {
@@ -99,9 +106,11 @@ function renderLibrary() {
       renderLibrary();
       showGame();
     }, "game");
+    item.dataset.game = game.id;
     item.setAttribute("aria-current", String(game.id === selected));
     item.append(element("span", game.path ? "Mapped on this device" : "Set up on this device"));
     list.append(item);
+    if (game.id === focused) item.focus({ preventScroll: true });
   }
 }
 
@@ -154,15 +163,19 @@ function ludusaviInstallButton(onReady) {
   return node;
 }
 
-function openMap(game, path = game?.path || "", mode = game?.mode || "auto", title = game?.title || "") {
+function openMap(game) {
   const form = $("map-form");
   form.dataset.game = game?.id || "";
   const fields = form.elements;
-  fields.title.value = title;
+  fields.title.value = game?.title || "";
   fields.install.value = game?.install || "";
   fields.install.closest("label").hidden = false;
-  fields.path.value = path;
-  fields.mode.value = mode;
+  fields.path.value = game?.path || "";
+  fields.path.required = Boolean(game);
+  fields.prefix.value = "";
+  $("map-proton").open = false;
+  $("map-proton").hidden = Boolean(game) || state?.platform !== "Linux";
+  fields.mode.value = game?.mode || "auto";
   fields.title.readOnly = Boolean(game);
   $("map-candidates").replaceChildren();
   $("map-heading").textContent = game ? "Set local save location" : "Add game";
@@ -170,24 +183,12 @@ function openMap(game, path = game?.path || "", mode = game?.mode || "auto", tit
   openDialog("map-dialog");
 }
 
-function openDiscovery(game) {
-  scanTarget = game;
-  const fields = $("discover-form").elements;
-  fields.title.value = game?.title || "";
-  fields.title.readOnly = Boolean(game);
-  fields.install.value = game?.install || "";
-  fields.prefix.value = "";
-  $("scan-results").replaceChildren();
-  openDialog("discover-dialog");
-  if (game) $("discover-form").requestSubmit();
-}
-
 const statuses = {
   empty: ["No saves found", "Make a save in the game, then check again."],
   upload: ["Ready to upload", "Publish this device’s save files to the shared folder."],
   download: ["Ready to download", "Apply the shared version to this device."],
   current: ["Up to date", "This device has the same saves as the shared version."],
-  conflict: ["Different save versions found", "Choose the progress you want to continue. Shared versions stay in history, and overwritten local files get a recovery copy."],
+  conflict: ["Different save versions found", "Open Save history to choose a shared version, or keep this device’s saves."],
   interrupted: ["Restore interrupted", "Recover the original local files before running another sync."],
 };
 
@@ -209,6 +210,7 @@ async function showGame() {
   const request = ++reviewRequest;
   const game = state.games.find((entry) => entry.id === selected);
   const detail = $("detail");
+  const refreshFocused = document.activeElement?.id === "refresh-saves";
   detail.replaceChildren();
   if (!game) {
     detail.append(element("h2", "Add your first game"),
@@ -220,10 +222,12 @@ async function showGame() {
   const heading = element("div", "", "panel-header");
   const tools = element("div", "", "actions");
   if (!game.detecting) {
-    tools.append(button(game.path ? "Change location" : "Enter path", () => openMap(game)));
-    if (game.path) tools.append(button("Find local saves", () => openDiscovery(game)));
+    if (game.path) {
+      const refreshButton = iconButton("↻", "Refresh saves", showGame);
+      refreshButton.id = "refresh-saves";
+      tools.append(refreshButton, iconButton("⚙︎", "Change save location", () => openMap(game)));
+    }
     if (game.can_detect) tools.append(button("Detect active save location", () => runSaveDetection(game, "start")));
-    if (game.install && state.platform === "Windows") tools.append(button("Send to Steam Deck", () => openTransfer(game)));
     if (game.path && state.cloud?.paired && state.platform === "Windows") {
       tools.append(button("Create sync shortcut", () => {
         const form = $("shortcut-form");
@@ -236,6 +240,7 @@ async function showGame() {
   }
   heading.append(element("h2", game.title), tools);
   detail.append(heading);
+  if (refreshFocused) $("refresh-saves")?.focus({ preventScroll: true });
   if (game.detecting) {
     const status = element("div", "", "status-box");
     status.append(element("h3", "Waiting for a new save"),
@@ -248,7 +253,7 @@ async function showGame() {
   }
   if (!game.path) {
     detail.append(element("p", "Choose the " + (game.mode === "file" ? "save file" : "save folder") + " for this game on this device."),
-      button("Find local saves", () => openDiscovery(game), "primary"));
+      button("Set save location", () => openMap(game), "primary"));
     return;
   }
 
@@ -262,7 +267,6 @@ async function showGame() {
   } catch (error) {
     if (request !== reviewRequest) return;
     checking.textContent = error.message;
-    detail.append(button("Check again", showGame));
   }
 }
 
@@ -278,7 +282,6 @@ function renderReview(game, review, detail) {
   detail.append(status);
 
   const actions = element("div", "", "actions");
-  actions.append(button("Check again", showGame));
   if (review.status === "interrupted") {
     actions.append(button("Recover original files", () => runAction(game, "recover", {},
       "Close the game before recovering the original save files. Continue?"), "primary"));
@@ -296,11 +299,10 @@ function renderReview(game, review, detail) {
     actions.append(button("Keep this device’s saves", () => runAction(game, "sync",
       { token: review.token, choice: "local" }, "Publish this device’s saves as the shared version?"), "primary"));
   }
-  detail.append(actions);
+  if (actions.childElementCount) detail.append(actions);
 
   if (review.versions.length) {
     const history = element("details", "", "history");
-    history.open = review.status === "conflict";
     const versions = element("div", "", "versions");
     appendDeviceHistory(versions, review.versions, review.status === "conflict", (version) => {
       const row = element("div", "", "version");
@@ -316,7 +318,7 @@ function renderReview(game, review, detail) {
       }
       return row;
     });
-    history.append(element("summary", "Version history"), versions);
+    history.append(element("summary", "Save history"), versions);
     detail.append(history);
   }
 }
@@ -361,7 +363,7 @@ function renderCloudHistory(game, review, detail) {
     : cloud.current ? "Up to date with the cloud" : cloud.latest ? "Cloud save available" : "Ready for cloud saves";
   status.append(element("h3", label));
   if (cloud.error) status.append(element("p", cloud.error));
-  if (cloud.conflict) status.append(element("p", "Choose which progress to keep. The other versions stay in history."));
+  if (cloud.conflict) status.append(element("p", "Open Save history to choose which progress to keep."));
   const actions = element("div", "", "actions");
   const choose = (choice, message) => runAction(game, "sync", {
     token: review.token, cloud_token: cloud.token, choice,
@@ -371,13 +373,13 @@ function renderCloudHistory(game, review, detail) {
     actions.append(button("Upload save", () => choose("local", "Close the game. Make this device’s save the active cloud version?"), "primary"));
   }
   if (cloud.other && !cloud.error) actions.append(button("Use latest from another device", () => use(cloud.other)));
-  actions.append(button("Check again", showGame));
-  detail.append(status, actions);
+  detail.append(status);
+  if (actions.childElementCount) detail.append(actions);
 
-  const history = element("section", "", "versions");
-  history.append(element("h3", "Save history"));
-  if (!review.versions.length) history.append(element("p", "No snapshots yet."));
-  appendDeviceHistory(history, review.versions, cloud.conflict, (version) => {
+  const history = element("details", "", "history");
+  const versions = element("div", "", "versions");
+  if (!review.versions.length) versions.append(element("p", "No snapshots yet."));
+  appendDeviceHistory(versions, review.versions, cloud.conflict, (version) => {
     const row = element("div", "", "version");
     const description = element("div");
     const name = version.device + (version.this_device ? " · This device" : "");
@@ -388,6 +390,7 @@ function renderCloudHistory(game, review, detail) {
     if (!cloud.error) row.append(button("Use this save", () => use(version.id)));
     return row;
   });
+  history.append(element("summary", "Save history"), versions);
   detail.append(history);
 }
 
@@ -421,56 +424,6 @@ async function runAction(game, action, data, confirmation) {
   } finally {
     clickedButtons.forEach((node) => { node.disabled = false; });
     busy = false;
-  }
-}
-
-function showScan(results) {
-  const container = $("scan-results");
-  container.replaceChildren();
-  if (!results.length) {
-    container.append(element("p", "No existing save files found. Make a save in the game, close it, then try again. You can also enter the save path manually."));
-  } else if (scanTarget && state.platform === "Linux") {
-    container.append(element("p", "If more than one folder appears, make a new save from the Steam shortcut you use, then scan again and choose the folder containing that save."));
-  }
-  for (const result of results) {
-    const card = element("section", "", "scan-game");
-    card.append(element("h3", result.title));
-    const titleMatches = state.games.filter((game) => game.title === result.title);
-    const existing = scanTarget || (titleMatches.length === 1 ? titleMatches[0] : null);
-    const folders = new Map();
-    for (const { path, folder, modified } of result.files) {
-      const location = folders.get(folder) || { files: [], modified: null };
-      location.files.push(path);
-      if (modified != null) location.modified = Math.max(location.modified ?? modified, modified);
-      folders.set(folder, location);
-    }
-
-    const pick = (path, mode) => {
-      $("discover-dialog").close();
-      openMap(existing, path, mode, result.title);
-    };
-    for (const [folder, { files, modified }] of folders) {
-      const group = element("div", "", "scan-file");
-      group.append(element("div", folder, "location"));
-      if (modified != null) {
-        group.append(element("p", "Most recent file change · " + new Date(modified).toLocaleString(), "hint"));
-      }
-      if (!existing || existing.mode === "directory") {
-        group.append(button("Use this folder", () => pick(folder, "directory")));
-      }
-      if (!existing || existing.mode === "file") {
-        const choices = element("details");
-        choices.append(element("summary", "Choose a single file"));
-        for (const file of files) {
-          const option = element("div", "", "scan-file");
-          option.append(element("div", file, "location"), button("Use this file", () => pick(file, "file")));
-          choices.append(option);
-        }
-        group.append(choices);
-      }
-      card.append(group);
-    }
-    container.append(card);
   }
 }
 
@@ -550,7 +503,6 @@ $("exit-button").addEventListener("click", async () => {
   }
 });
 $("add-button").addEventListener("click", () => openMap());
-$("discover-button").addEventListener("click", () => openDiscovery());
 $("refresh-button").addEventListener("click", () => {
   if (busy) return;
   notice("");
@@ -596,12 +548,11 @@ function renderMapCandidates(candidates) {
 
 async function detectSaveLocation(form, data) {
   let scan;
-  const current = state.games.find((entry) => entry.id === form.dataset.game);
   try {
     scan = await api("discover", {
       title: data.title,
-      install: data.install || current?.install || "",
-      id: current?.id || "",
+      install: data.install || "",
+      prefix: data.prefix || "",
     });
   } catch (error) {
     const box = $("map-candidates");
@@ -631,7 +582,7 @@ async function detectSaveLocation(form, data) {
 
 async function saveMapLocation(data) {
   const form = $("map-form");
-  if (!data.path.trim()) {
+  if (!form.dataset.game && !data.path.trim()) {
     await detectSaveLocation(form, data);
     if (!data.path.trim()) {
       formError(form, "A save location is needed. Pick a detected one, enter the path, or cancel.");
@@ -645,19 +596,4 @@ async function saveMapLocation(data) {
 }
 
 bindForm("map-form", (data) => saveMapLocation({ ...data }));
-bindForm("discover-form", async (data) => {
-  $("scan-results").replaceChildren(element("p", "Looking for save files…"));
-  try {
-    const result = await api("discover", { ...data, id: scanTarget?.id || "" });
-    showScan(result.results);
-  } catch (error) {
-    $("scan-results").replaceChildren();
-    if (!state.ludusavi_ready) {
-      $("scan-results").append(element("p", error.message));
-      $("scan-results").append(ludusaviInstallButton(() => $("discover-form").requestSubmit()));
-      return;
-    }
-    throw error;
-  }
-});
 refresh().catch((error) => notice(error.message, true));

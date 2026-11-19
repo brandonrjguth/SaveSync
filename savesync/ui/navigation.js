@@ -5,8 +5,10 @@
     ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0],
   };
   const controls = "button, a[href], input:not([type=hidden]), select, textarea, summary, [tabindex]:not([tabindex='-1'])";
+  const nativeEnabled = document.querySelector('meta[name="savesync-native-controller"]').content === "true";
   let selectEdit;
   let lastKeyboard = -Infinity;
+  let nativeActive = nativeEnabled;
 
   function scope() {
     return document.activeElement?.closest("dialog[open]")
@@ -114,29 +116,54 @@
     move(directions[event.key]);
   });
 
-  if (!navigator.getGamepads) return;
   const buttons = [[12, "ArrowUp"], [13, "ArrowDown"], [14, "ArrowLeft"], [15, "ArrowRight"], [0, "A"], [1, "B"]];
   const nextPress = new Map();
-  function frame(now) {
-    let pads;
-    try {
-      pads = navigator.getGamepads();
-    } catch {
-      return;
-    }
-    const pad = Array.from(pads).find((entry) => entry?.connected && entry.mapping === "standard");
-    for (const [index, action] of buttons) {
-      if (!pad?.buttons[index]?.pressed || !document.hasFocus()) {
-        nextPress.delete(index);
+  window.addEventListener("blur", () => nextPress.clear());
+  function handleButtons(pressed, now) {
+    for (const [, action] of buttons) {
+      if (!pressed.has(action)) {
+        nextPress.delete(action);
         continue;
       }
-      if (now < (nextPress.get(index) ?? 0) || now - lastKeyboard < 120) continue;
-      const repeat = nextPress.has(index);
-      nextPress.set(index, action in directions ? now + (repeat ? 110 : 350) : Infinity);
+      if (now < (nextPress.get(action) ?? 0) || now - lastKeyboard < 120) continue;
+      const repeat = nextPress.has(action);
+      nextPress.set(action, action in directions ? now + (repeat ? 110 : 350) : Infinity);
       if (action === "A" && !candidates(scope()).includes(document.activeElement)) move([0, 1]);
       else input(action);
     }
+  }
+
+  function frame(now) {
+    if (!document.hasFocus() || document.hidden) {
+      nextPress.clear();
+    } else if (!nativeActive) {
+      let pads;
+      try {
+        pads = navigator.getGamepads();
+      } catch {
+        return;
+      }
+      const pad = Array.from(pads).find((entry) => entry?.connected && entry.mapping === "standard");
+      handleButtons(new Set(buttons.filter(([index]) => pad?.buttons[index]?.pressed).map(([, action]) => action)), now);
+    }
     requestAnimationFrame(frame);
   }
-  requestAnimationFrame(frame);
+
+  async function pollNative() {
+    if (document.hasFocus() && !document.hidden) {
+      try {
+        const result = await api("controller");
+        nativeActive = result.connected;
+        if (nativeActive && document.hasFocus() && !document.hidden) {
+          handleButtons(new Set([...result.held, ...result.pressed]), performance.now());
+        }
+      } catch {
+        nativeActive = false;
+      }
+    }
+    setTimeout(pollNative, nativeActive && document.hasFocus() ? 65 : 300);
+  }
+
+  if (navigator.getGamepads) requestAnimationFrame(frame);
+  if (nativeEnabled) void pollNative();
 })();

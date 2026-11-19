@@ -8,6 +8,7 @@ import tempfile
 import threading
 from pathlib import Path
 
+from .controller import steam_session
 from .snapshots import SaveError
 
 
@@ -117,7 +118,8 @@ def browser_window(server, url, log):
     server.timeout = 0.25
     with tempfile.TemporaryDirectory(prefix="savesync-window-", dir=cache, ignore_cleanup_errors=True) as profile:
         if kind == "firefox":
-            args = [*command, "--new-window", "--no-remote", "--profile", profile, url]
+            mode = "--kiosk" if steam_session() else "--new-window"
+            args = [*command, mode, "--no-remote", "--profile", profile, url]
         else:
             args = [
                 *command, "--app=" + url, "--user-data-dir=" + profile,

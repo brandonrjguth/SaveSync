@@ -6,7 +6,7 @@ set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-python3 -m pip install --disable-pip-version-check --upgrade certifi cryptography pyinstaller
+python3 -m pip install --disable-pip-version-check --upgrade certifi cryptography pyinstaller evdev
 
 LUDUSAVI_STAGE="$ROOT/build/tools-stage"
 LUDUSAVI_BIN="$LUDUSAVI_STAGE/tools/ludusavi/ludusavi"

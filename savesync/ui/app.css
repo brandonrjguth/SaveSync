@@ -22,6 +22,14 @@ button {
 }
 button:hover { background: #334059; }
 button:disabled { opacity: .6; cursor: wait; }
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 44px;
+  min-height: 44px;
+  padding: 0;
+  font-size: 1.4rem;
+}
 button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible,
 .controller-nav :focus {
   outline: 2px solid var(--accent);
@@ -76,7 +84,7 @@ p, .hint { color: var(--muted); line-height: 1.55; }
 .game[aria-current="true"] { background: #283542; border-color: #526b5c; }
 .game span { display: block; color: var(--muted); font-size: .82rem; margin-top: 5px; }
 .panel { min-height: 260px; padding: clamp(17px, 4vw, 28px); overflow-wrap: anywhere; }
-.panel > * + *, .scan-game > * + * { margin-top: 14px; }
+.panel > * + * { margin-top: 14px; }
 .panel-header, .dialog-heading, .version { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .panel-header button, .version button { flex-shrink: 0; }
 .location {
@@ -93,7 +101,18 @@ p, .hint { color: var(--muted); line-height: 1.55; }
 .notice.error, .status-box.attention { border-color: #846747; background: #342c25; color: #ffe2b8; }
 .status-box p { margin-top: 5px; color: inherit; }
 .history { padding-top: 12px; border-top: 1px solid var(--line); }
-.history summary, summary { cursor: pointer; }
+summary { cursor: pointer; }
+.history > summary { display: inline-flex; align-items: center; gap: 10px; font-weight: 700; }
+.history > summary::-webkit-details-marker { display: none; }
+.history > summary::after {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border: solid currentColor;
+  border-width: 0 2px 2px 0;
+  transform: translateY(-2px) rotate(45deg);
+}
+.history[open] > summary::after { transform: translateY(2px) rotate(225deg); }
 .versions { margin-top: 10px; }
 .version { padding: 12px 0; border-bottom: 1px solid var(--line); }
 .version:last-child { border-bottom: 0; }
@@ -126,7 +145,6 @@ input, select {
 dialog details label { margin-top: 12px; }
 footer { display: flex; justify-content: flex-end; gap: 8px; }
 .form-error { color: #ffbcb7; overflow-wrap: anywhere; }
-.scan-game { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
 .scan-file { padding-bottom: 12px; }
 .scan-file .location { margin-bottom: 7px; }
 [hidden] { display: none !important; }

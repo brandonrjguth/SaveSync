@@ -114,6 +114,37 @@ try {
     return {"path": windows_script(script, {"folder": starting_folder}, timeout=300)}
 
 
+def browse_game_folder(folder):
+    if os.name != "nt":
+        raise SaveError("The folder picker is available on Windows.")
+    starting_folder = Path.home()
+    if folder.strip():
+        try:
+            candidate = clean_path(folder)
+            if candidate.is_dir():
+                starting_folder = candidate
+        except (SaveError, OSError):
+            pass
+    script = POWERSHELL_INPUT + """
+Add-Type -AssemblyName System.Windows.Forms
+$owner = New-Object System.Windows.Forms.Form
+$owner.TopMost = $true
+$picker = New-Object System.Windows.Forms.FolderBrowserDialog
+try {
+    $picker.Description = 'Choose the Windows game folder'
+    $picker.SelectedPath = $p.folder
+    $picker.ShowNewFolderButton = $false
+    if ($picker.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
+        [Console]::WriteLine($picker.SelectedPath)
+    }
+} finally {
+    $picker.Dispose()
+    $owner.Dispose()
+}
+"""
+    return {"path": windows_script(script, {"folder": str(starting_folder)}, timeout=300)}
+
+
 def create_shortcut(library, data):
     if os.name != "nt" or not getattr(sys, "frozen", False):
         raise SaveError("Install the Windows SaveSync release to create game shortcuts.")

@@ -516,7 +516,7 @@ class GameTransfers:
                 return "Added to Game library. Connect to the PC to sync saves."
             if not game["path"]:
                 if not hint or hint.get("base") not in ("game", "prefix") or not hint.get("path"):
-                    return "Added to Game library. Open it there and use Find local saves."
+                    return "Added to Game library. Open it there and select Set save location."
                 if hint["base"] == "prefix" and not record["steam"]:
                     return "Added to Game library. Map the save location after adding the game to Steam."
                 validate_names([hint["path"]], "directory")

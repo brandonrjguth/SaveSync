@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="savesync-token" content="__SESSION_TOKEN__">
   <meta name="savesync-window" content="__WINDOW_MODE__">
+  <meta name="savesync-native-controller" content="__NATIVE_CONTROLLER__">
   <title>SaveSync</title>
   <link rel="stylesheet" href="/app.css">
   <script src="/app.js" defer></script>
@@ -26,7 +27,6 @@
       <div class="actions">
         <button type="button" id="transfer-button" hidden>Game transfer</button>
         <button type="button" id="refresh-button">Refresh</button>
-        <button type="button" id="discover-button">Find saves</button>
         <button type="button" id="add-button" class="primary">Add game</button>
       </div>
     </header>
@@ -87,6 +87,9 @@
       <label>Game title<input name="title" required maxlength="160"></label>
       <label>Game install folder<input name="install" placeholder="Optional — e.g. D:\Games\Example or /home/deck/Games/Example"></label>
       <label>Save location<input name="path" placeholder="Leave blank to detect automatically, or enter an absolute path"></label>
+      <details id="map-proton"><summary>Wine and Proton options</summary>
+        <label>Wine or Proton prefix<input name="prefix" placeholder="/path/to/compatdata/12345/pfx"></label>
+      </details>
       <input type="hidden" name="mode" value="auto">
       <div id="map-candidates" aria-live="polite"></div>
       <p class="hint">The save location is detected from the title when Ludusavi is available. A dedicated save folder is recommended; sync applies all files in it, including deletions.</p>
@@ -103,20 +106,6 @@
       <p class="hint">Use the actual game executable. The desktop shortcut checks for a cloud save before launch and uploads changed saves when that process exits.</p>
       <p class="form-error" role="alert" hidden></p>
       <footer><button type="button" data-close>Cancel</button><button class="primary" type="submit">Create desktop shortcut</button></footer>
-    </form>
-  </dialog>
-  <dialog id="discover-dialog">
-    <form id="discover-form">
-      <div class="dialog-heading"><h2>Find saves</h2><button type="button" data-close aria-label="Close">×</button></div>
-      <label>Game title<input name="title" placeholder="Leave blank to scan for all detected games"></label>
-      <label>Game install folder<input name="install" placeholder="Optional — e.g. /home/deck/Games/Example — scans inside this folder too"></label>
-      <details><summary>Wine and Proton options</summary>
-        <label>Wine or Proton prefix<input name="prefix" placeholder="/path/to/compatdata/12345/pfx"></label>
-      </details>
-      <p class="hint">Ludusavi finds existing save files. If the game is newly installed, launch it once and create a save.</p>
-      <p class="form-error" role="alert" hidden></p>
-      <button type="submit" class="primary">Scan device</button>
-      <div id="scan-results" aria-live="polite"></div>
     </form>
   </dialog>
   <dialog id="transfer-dialog" aria-labelledby="transfer-title">
@@ -152,7 +141,10 @@
             <form id="share-form">
               <label>Game title<input name="title" maxlength="160" required></label>
               <label>Windows game folder<input name="folder" required placeholder="D:\Games\Example"></label>
-              <button type="button" id="transfer-scan">Find executables</button>
+              <div class="actions">
+                <button type="button" id="transfer-browse" aria-label="Browse for Windows game folder">Browse…</button>
+                <button type="button" id="transfer-scan">Find executables</button>
+              </div>
               <label>Game executable relative to folder<input name="exe" list="transfer-exes" placeholder="Optional — choose on the Deck after download"></label>
               <datalist id="transfer-exes"></datalist>
               <label>Link a save entry<select name="save_id" id="transfer-save"><option value="">None</option></select></label>
