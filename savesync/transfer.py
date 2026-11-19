@@ -84,9 +84,10 @@ def local_addresses():
     return sorted(addresses)
 
 
-def game_files(root):
+def game_files(root, exclude=()):
     if path_kind(root) != "directory":
         raise SaveError("Choose an existing game folder.")
+    excluded = {Path(item).resolve() for item in exclude if item}
     result = {}
     empty_dirs = []
 
@@ -95,6 +96,8 @@ def game_files(root):
 
     for folder, directories, files in os.walk(root, onerror=fail):
         base = Path(folder)
+        if excluded:
+            directories[:] = [name for name in directories if (base / name).resolve() not in excluded]
         if base != root and not directories and not files:
             empty_dirs.append(base.relative_to(root).as_posix())
         for name in directories:
@@ -119,8 +122,8 @@ def safe_file(root, name):
     return target
 
 
-def manifest_for(root, title, executable, hint):
-    sources, empty_dirs = game_files(root)
+def manifest_for(root, title, executable, hint, exclude=()):
+    sources, empty_dirs = game_files(root, exclude=exclude)
     executable = executable.replace("\\", "/")
     if executable and (executable not in sources or Path(executable).suffix.lower() != ".exe"):
         raise SaveError("Choose the Windows .exe inside the game folder.")

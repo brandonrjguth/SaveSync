@@ -259,7 +259,13 @@ function openTransfer(game = null) {
   }
   transferDialog.showModal();
   tickTransfers().then(() => {
-    if (transferStatus && transferStatus.role === "deck") discoverTransferHosts();
+    if (!transferStatus) return;
+    if (transferStatus.role === "deck") {
+      discoverTransferHosts();
+    } else if (transferStatus.role === "host" && transferStatus.code && game && game.install
+      && !transferStatus.job?.running && !transferStatus.games.some((item) => item.title === game.title)) {
+      transferAction("share_library", { id: game.id });
+    }
   });
   transferTimer = setInterval(tickTransfers, 1000);
 }

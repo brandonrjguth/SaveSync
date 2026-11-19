@@ -85,7 +85,7 @@ class GameTransfers:
     def action(self, action, data):
         if action == "status":
             return self.status()
-        if action in ("start", "stop", "scan", "share", "remove"):
+        if action in ("start", "stop", "scan", "share", "share_library", "remove"):
             self.only("host")
         else:
             self.only("deck")
@@ -97,12 +97,15 @@ class GameTransfers:
                 raise SaveError("Wait for the game folder scan to finish.")
             self.host.stop()
         elif action == "scan":
-            sources, _ = game_files(self.source_path(data["folder"]))
+            sources, _ = game_files(self.source_path(data["folder"]), exclude=self.excluded_paths())
             return {"executables": [name for name in sorted(sources) if Path(name).suffix.lower() == ".exe"][:300]}
         elif action == "remove":
             self.host.remove(data["id"])
         elif action == "share":
             self.share(data)
+        elif action == "share_library":
+            game_id = data.get("id")
+            self.share_library_games({checked_id(game_id)} if game_id else None)
         elif action == "discover":
             return {"hosts": discover_hosts()}
         elif action == "connect":
@@ -120,17 +123,24 @@ class GameTransfers:
             raise SaveError("Unknown transfer action.")
         return self.status()
 
+    def excluded_paths(self):
+        paths = [self.library.directory]
+        shared = self.library.state()["shared"]
+        if shared:
+            paths.append(Path(shared) / "SaveSync-v1")
+        return paths
+
     def source_path(self, value):
         root = clean_path(value)
         if path_kind(root) == "file":
             raise SaveError(f"Choose the game’s folder rather than a file (for example: {root.parent}).")
         if root in (Path(root.anchor), Path.home().resolve()):
             raise SaveError("Choose a specific game folder rather than an entire drive or your home folder.")
-        if overlap(root, self.library.directory):
-            raise SaveError("The game folder cannot overlap SaveSync’s data folder.")
+        if root.is_relative_to(self.library.directory):
+            raise SaveError("The game folder cannot be inside SaveSync’s data folder.")
         shared = self.library.state()["shared"]
-        if shared and overlap(root, Path(shared) / "SaveSync-v1"):
-            raise SaveError("The game folder cannot overlap SaveSync’s shared snapshot folder (SaveSync-v1).")
+        if shared and root.is_relative_to(Path(shared) / "SaveSync-v1"):
+            raise SaveError("The game folder cannot be inside SaveSync’s shared snapshot folder (SaveSync-v1).")
         return root
 
     def start_job(self, label, run):
@@ -168,7 +178,7 @@ class GameTransfers:
         title, executable = data["title"].strip(), data["exe"].strip()
 
         def prepare():
-            manifest = manifest_for(root, title, executable, hint)
+            manifest = manifest_for(root, title, executable, hint, exclude=self.excluded_paths())
             self.host.add(root, manifest)
             return {"message": "Game is ready to download on the Deck."}
 
@@ -191,6 +201,7 @@ class GameTransfers:
         def prepare():
             shared_count = 0
             skipped = []
+            excluded = self.excluded_paths()
             for key, title, install in entries:
                 if self.stopping.is_set() or self.host.server is None:
                     break
@@ -203,10 +214,10 @@ class GameTransfers:
                             self.library.sync({"id": key, "token": review["token"], "choice": "auto"})
                     except SaveError:
                         pass
-                    sources, _ = game_files(root)
+                    sources, _ = game_files(root, exclude=excluded)
                     exes = [name for name in sorted(sources) if Path(name).suffix.lower() == ".exe"]
                     executable = exes[0] if len(exes) == 1 else ""
-                    manifest = manifest_for(root, title, executable, hint)
+                    manifest = manifest_for(root, title, executable, hint, exclude=excluded)
                     self.host.add(root, manifest)
                     shared_count += 1
                 except (SaveError, OSError, ValueError, KeyError, TypeError) as error:
