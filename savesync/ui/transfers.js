@@ -35,7 +35,17 @@ async function transferAction(action, data = {}) {
       transferInvite = result.invite || data.invite || "";
       transferCatalog = result.games;
       renderCatalog();
-      transferMessage(result.host ? "Connected to " + result.host + "." : "Connected to PC.");
+      renderTransfer(await transferCall("status"));
+      if (state) refresh().catch(() => {});
+      const syncInfo = result.save_sync;
+      const syncNote = syncInfo && (syncInfo.pulled || syncInfo.pushed || syncInfo.applied)
+        ? " Saves synced with PC."
+        : " Saves checked with PC.";
+      transferMessage((result.host ? "Connected to " + result.host + "." : "Connected to PC.") + syncNote);
+    } else if (action === "sync_saves") {
+      renderTransfer(await transferCall("status"));
+      if (state) refresh().catch(() => {});
+      transferMessage("Saves synced with PC (" + (result.pulled || 0) + " downloaded, " + (result.pushed || 0) + " uploaded).");
     } else if (action === "scan") {
       replaceOptions($("transfer-exes"), result.executables.map((path) => [path, path]));
       if (result.executables.length === 1) $("share-form").elements.exe.value = result.executables[0];
@@ -75,6 +85,12 @@ function replaceOptions(select, options) {
 function renderCatalog() {
   const container = $("transfer-catalog");
   container.replaceChildren();
+  if (transferInvite) {
+    const syncBar = element("div", "", "panel-header");
+    syncBar.append(element("h3", "Connected PC"),
+      button("Sync saves with PC", () => transferAction("sync_saves", { invite: transferInvite })));
+    container.append(syncBar);
+  }
   if (!transferCatalog.length) container.append(element("p", "The PC has no shared games yet."));
   for (const game of transferCatalog) {
     const row = element("div", "", "version");

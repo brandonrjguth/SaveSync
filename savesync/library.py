@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .discovery import find_ludusavi
 from .snapshots import (
-    ID, SaveError, apply_files, files_at, fingerprint, history, metadata, path_kind, read_snapshot,
+    ID, SaveError, apply_files, atomic_file, files_at, fingerprint, history, metadata, path_kind, read_snapshot,
     replace_saves, scan, stage_snapshot, write_json, write_snapshot,
 )
 
@@ -47,16 +47,21 @@ class Library:
             return {"device": socket.gethostname(), "platform": platform.system(),
                     "shared": "", "ludusavi": "", "maps": {}}
 
+    def default_shared(self):
+        folder = self.directory / "shared"
+        (folder / "SaveSync-v1").mkdir(parents=True, exist_ok=True)
+        return folder
+
     def settings(self, data):
         state = self.state()
-        shared = clean_path(data["shared"]) if data["shared"].strip() else None
+        shared = clean_path(data["shared"]) if data["shared"].strip() else self.default_shared()
         if shared is not None:
             if not shared.is_dir():
                 raise SaveError("Create or mount the shared folder, then enter its existing path.")
-            if overlap(shared, self.directory):
+            if shared != (self.directory / "shared") and overlap(shared, self.directory):
                 raise SaveError("Choose a shared folder outside SaveSync's local data folder.")
             for mapping in state["maps"].values():
-                if mapping.get("path") and overlap(shared, Path(mapping["path"])):
+                if mapping.get("path") and overlap(shared / "SaveSync-v1", Path(mapping["path"])):
                     raise SaveError("The shared folder cannot overlap a configured save location.")
             (shared / "SaveSync-v1").mkdir(exist_ok=True)
         if state["shared"] != (str(shared) if shared else ""):
@@ -68,10 +73,15 @@ class Library:
 
     def store(self, state):
         if not state["shared"]:
-            raise SaveError("Set a shared folder in Settings first.")
+            default = self.default_shared()
+            state["shared"] = str(default)
+            write_json(self.config, state)
         store = Path(state["shared"]) / "SaveSync-v1"
         if not store.is_dir():
-            raise SaveError("The shared folder is unavailable. Check its mount or sync provider.")
+            if Path(state["shared"]) == (self.directory / "shared"):
+                store.mkdir(parents=True, exist_ok=True)
+            else:
+                raise SaveError("The shared folder is unavailable. Check its mount or sync provider.")
         return store
 
     def games(self):
@@ -126,7 +136,7 @@ class Library:
 
         path = clean_path(data["path"])
         if (path in (Path(path.anchor), Path.home().resolve())
-                or overlap(path, self.directory) or overlap(path, store.parent)):
+                or overlap(path, self.directory) or overlap(path, store)):
             raise SaveError("Choose a dedicated save location outside the shared and application folders.")
         for key, mapping in state["maps"].items():
             if key != game["id"] and mapping.get("path") and overlap(path, Path(mapping["path"])):
@@ -298,6 +308,119 @@ class Library:
             apply_files(path, game["mode"], scan(path, game["mode"]), info["files"], original)
         pending.unlink()
         return "Restored the local copy from before the interruption."
+
+    def auto_publish_all(self):
+        """Publish any non-conflicting local save changes across mapped games into SaveSync-v1."""
+        state = self.state()
+        for key, mapping in list(state["maps"].items()):
+            if not mapping.get("path") or self.pending(key).is_file():
+                continue
+            try:
+                _, _, _, _, _, status, token = self.inspect(self.state(), key)
+                if status == "upload":
+                    self.sync({"id": key, "token": token, "choice": "auto"})
+            except (SaveError, OSError, ValueError, KeyError, TypeError):
+                continue
+
+    def auto_apply_all(self):
+        """Apply any non-conflicting downloaded snapshots across mapped games."""
+        applied = 0
+        state = self.state()
+        for key, mapping in list(state["maps"].items()):
+            if not mapping.get("path") or self.pending(key).is_file():
+                continue
+            try:
+                _, _, _, _, _, status, token = self.inspect(self.state(), key)
+                if status in ("download", "current"):
+                    self.sync({"id": key, "token": token, "choice": "auto"})
+                    if status == "download":
+                        applied += 1
+            except (SaveError, OSError, ValueError, KeyError, TypeError):
+                continue
+        return applied
+
+    def list_store_snapshots(self):
+        """Return all games and snapshot IDs in the local SaveSync-v1 store after auto-publishing."""
+        self.auto_publish_all()
+        store = self.store(self.state())
+        entries = []
+        for folder in sorted(store.iterdir()):
+            game_file = folder / "game.json"
+            if not (ID.fullmatch(folder.name) and game_file.is_file()):
+                continue
+            try:
+                game = json.loads(game_file.read_text(encoding="utf-8"))
+                if (game.get("id") != folder.name or game.get("mode") not in ("file", "directory")
+                        or not isinstance(game.get("title"), str)):
+                    continue
+                versions, _ = history(folder, folder.name)
+                # Topological / creation-time order so parents arrive before children
+                ordered = [k for k, _ in sorted(versions.items(), key=lambda item: (len(item[1]["parents"]), item[1]["created"]))]
+                entries.append({"game": {"id": game["id"], "title": game["title"], "mode": game["mode"]},
+                                "snapshots": ordered})
+            except (SaveError, OSError, ValueError, KeyError, TypeError):
+                continue
+        return entries
+
+    def snapshot_path(self, game_id, snap_id):
+        store = self.store(self.state())
+        path = store / checked_id(game_id) / (checked_id(snap_id) + ".zip")
+        if path_kind(path) != "file":
+            raise SaveError("Snapshot not found.")
+        return path
+
+    def import_snapshot(self, game_info, snap_id, raw_bytes):
+        """Validate and store a snapshot .zip received over LAN."""
+        if not isinstance(game_info, dict):
+            raise SaveError("Invalid game metadata.")
+        game_id = checked_id(game_info.get("id", ""))
+        snap_id = checked_id(snap_id)
+        title = str(game_info.get("title", "")).strip()[:160]
+        mode = game_info.get("mode")
+        if not title or mode not in ("file", "directory"):
+            raise SaveError("Invalid game metadata.")
+        store = self.store(self.state())
+        folder = store / game_id
+        folder.mkdir(parents=True, exist_ok=True)
+        game_file = folder / "game.json"
+        if not game_file.is_file():
+            write_json(game_file, {"id": game_id, "title": title, "mode": mode})
+        self._reconcile_title_mapping(store, game_id, title, mode)
+        target = folder / (snap_id + ".zip")
+        if target.is_file():
+            return False
+        with tempfile.TemporaryDirectory(dir=folder) as temp_dir:
+            staged = Path(temp_dir) / (snap_id + ".zip")
+            staged.write_bytes(raw_bytes)
+            info = read_snapshot(staged, game_id)
+            if info["id"] != snap_id or info["mode"] != mode:
+                raise SaveError("Snapshot metadata did not match.")
+            os.replace(staged, target)
+        return True
+
+    def _reconcile_title_mapping(self, store, game_id, title, mode):
+        """If this device mapped the same game title under a local-only ID with no snapshots, merge it to game_id."""
+        state = self.state()
+        if game_id in state["maps"] and state["maps"][game_id].get("path"):
+            return
+        for other_id, mapping in list(state["maps"].items()):
+            if other_id == game_id or mapping.get("title", "").casefold() != title.casefold():
+                continue
+            other_folder = store / other_id
+            other_zips = list(other_folder.glob("*.zip")) if other_folder.is_dir() else []
+            if not other_zips:
+                merged = dict(mapping, id=game_id, title=title, mode=mode)
+                merged.pop("baseline", None)
+                state["maps"][game_id] = merged
+                state["maps"].pop(other_id, None)
+                if other_folder.is_dir():
+                    try:
+                        (other_folder / "game.json").unlink(missing_ok=True)
+                        other_folder.rmdir()
+                    except OSError:
+                        pass
+                write_json(self.config, state)
+                return
 
 
 def checked_id(value):

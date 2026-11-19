@@ -9,7 +9,9 @@ from pathlib import Path
 from .library import checked_id, clean_path, overlap
 from .snapshots import SaveError, path_kind, validate_names, write_json
 from .steam_shortcuts import add_steam_shortcut, decky_bridge_installed
-from .transfer import PORT, Host, catalog, discover_hosts, download, game_files, install_parent, manifest_for, pair
+from .transfer import (
+    PORT, Host, catalog, discover_hosts, download, game_files, install_parent, manifest_for, pair, sync_saves_lan,
+)
 
 HELPER_EXE_HINTS = (
     "unitycrashhandler", "crashreport", "crashhandler", "unins", "uninstall",
@@ -60,7 +62,8 @@ class GameTransfers:
     def __init__(self, library):
         self.library = library
         self.role = "host" if os.name == "nt" else "deck" if not os.environ.get("TERMUX_VERSION") else ""
-        self.host = Host(library.directory)
+        self.host = Host(library.directory, library)
+        self.session_invite = ""
         self.job = {}
         self.stopping = threading.Event()
 
@@ -126,6 +129,8 @@ class GameTransfers:
             return {"hosts": discover_hosts()}
         elif action == "connect":
             return self.connect(data)
+        elif action == "sync_saves":
+            return self.sync_saves(str(data.get("invite") or ""))
         elif action == "exes":
             return {"executables": self.list_executables(checked_id(data["id"]))}
         elif action == "download":
@@ -257,7 +262,10 @@ class GameTransfers:
     def connect(self, data):
         raw_invite = str(data.get("invite") or "").strip()
         if "#" in raw_invite:
-            return {"games": catalog(raw_invite), "invite": raw_invite}
+            games = catalog(raw_invite)
+            self.session_invite = raw_invite
+            sync_result = self.sync_saves(raw_invite)
+            return {"games": games, "invite": raw_invite, "save_sync": sync_result}
         code = str(data.get("code") or raw_invite).strip()
         address = str(data.get("address") or "").strip()
         raw_port = data.get("port")
@@ -281,7 +289,26 @@ class GameTransfers:
             address = hosts[0]["address"]
             port = hosts[0]["port"]
         invite = pair(address, code, port)
-        return {"games": catalog(invite), "invite": invite, "host": address}
+        games = catalog(invite)
+        self.session_invite = invite
+        sync_result = self.sync_saves(invite)
+        return {"games": games, "invite": invite, "host": address, "save_sync": sync_result}
+
+    def sync_saves(self, invite=""):
+        active = (invite or self.session_invite).strip()
+        if not active:
+            raise SaveError("Connect to the PC first.")
+        self.session_invite = active
+        counts = sync_saves_lan(active, self.library)
+        for path in sorted(self.receipts.glob("*.json")):
+            try:
+                record = json.loads(path.read_bytes())
+                if Path(record["target"]).is_dir():
+                    self.finish(record["id"], sync_lan=False)
+            except (SaveError, OSError, ValueError, KeyError, TypeError):
+                continue
+        applied = self.library.auto_apply_all()
+        return {"pulled": counts["pulled"], "pushed": counts["pushed"], "applied": applied}
 
     def fetch(self, data):
         parent = install_parent(data["folder"], self.library)
@@ -290,6 +317,7 @@ class GameTransfers:
         if receipt.is_file() and Path(json.loads(receipt.read_bytes())["target"]).is_dir():
             raise SaveError("This game is already downloaded. Its setup can be retried below.")
         invite, steam = data["invite"], data.get("steam") is True
+        self.session_invite = invite
 
         def report(done, total):
             if self.stopping.is_set():
@@ -303,6 +331,10 @@ class GameTransfers:
 
         def install():
             manifest, _ = download(invite, key, parent, report, record_install)
+            try:
+                sync_saves_lan(invite, self.library)
+            except (SaveError, OSError, ValueError):
+                pass
             message = "Game downloaded."
             if steam and not manifest["exe"]:
                 message = "Game downloaded. Choose its executable below to add it to Steam."
@@ -319,7 +351,12 @@ class GameTransfers:
         exes = [name for name in sources if Path(name).suffix.lower() == ".exe"]
         return rank_executables(exes)[:300]
 
-    def finish(self, key, exe=""):
+    def finish(self, key, exe="", sync_lan=True):
+        if sync_lan and self.session_invite:
+            try:
+                sync_saves_lan(self.session_invite, self.library)
+            except (SaveError, OSError, ValueError):
+                pass
         receipt = self.receipts / (key + ".json")
         if not receipt.is_file():
             raise SaveError("The game has not been downloaded.")
@@ -358,25 +395,23 @@ class GameTransfers:
         hint_id = hint.get("id") if isinstance(hint, dict) else None
         try:
             ensured_id = self.library.ensure_game(record["title"], install=str(target), game_id=hint_id)
-            if not hint:
-                return "Added to Game library. Use Find local saves to link its save folder."
             key = checked_id(hint["id"]) if hint_id else ensured_id
             games = self.library.games()["games"]
             game = next((entry for entry in games if entry["id"] == key), None)
             if game is None:
-                return "Added to Game library. Connect the same shared save folder as the PC, then retry setup."
+                game = next((entry for entry in games if entry["title"].casefold() == record["title"].casefold()), None)
+                if game is not None:
+                    key = game["id"]
+            if game is None:
+                return "Added to Game library. Connect to the PC to sync saves."
             if not game["path"]:
-                if hint["base"] not in ("game", "prefix") or not hint["path"]:
+                if not hint or hint.get("base") not in ("game", "prefix") or not hint.get("path"):
                     return "Added to Game library. Open it there and use Find local saves."
                 if hint["base"] == "prefix" and not record["steam"]:
                     return "Added to Game library. Map the save location after adding the game to Steam."
-                if not self.library.state()["shared"]:
-                    return "Added to Game library. Set a shared folder in Settings, then retry setup."
                 validate_names([hint["path"]], "directory")
                 root = target if hint["base"] == "game" else prefix / "pfx/drive_c/users/steamuser"
                 self.library.map_game({"id": key, "path": str(root / hint["path"]), "install": str(target)})
-            if not self.library.state()["shared"]:
-                return "Added to Game library. Set a shared folder in Settings to sync saves."
             review = self.library.review(key)
             if review["status"] in ("download", "current"):
                 self.library.sync({"id": key, "token": review["token"], "choice": "auto"})
@@ -385,7 +420,7 @@ class GameTransfers:
                 return "Save versions differ. Choose the progress to keep in Game library."
             if review["status"] == "upload":
                 return "Local saves are ready to upload from Game library."
-            return "Save location linked. Upload from the PC when saves are available."
+            return "Save location linked. Upload saves on the PC or connect to the PC to sync."
         except (SaveError, OSError, ValueError, KeyError, TypeError) as error:
             return f"Save setup needs attention: {error}"
 

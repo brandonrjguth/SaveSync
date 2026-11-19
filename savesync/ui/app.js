@@ -135,11 +135,6 @@ function ludusaviInstallButton(onReady) {
 }
 
 function openMap(game, path = game?.path || "", mode = game?.mode || "auto", title = game?.title || "") {
-  if (!state.shared) {
-    openSettings();
-    formError($("settings-form"), "Set the shared folder before adding a game.");
-    return;
-  }
   const form = $("map-form");
   form.dataset.game = game?.id || "";
   const fields = form.elements;

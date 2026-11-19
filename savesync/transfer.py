@@ -206,6 +206,28 @@ class LANHandler(BaseHTTPRequestHandler):
         if server.stopped.is_set() or self.headers.get("Host") != server.peer:
             self.send_error(403)
             return
+        if self.path.startswith("/v1/saves/"):
+            auth = self.headers.get("Authorization", "").encode("utf-8")
+            if not hmac.compare_digest(auth, b"Bearer " + server.secret.encode()) or server.library is None:
+                self.send_error(403)
+                return
+            parts = self.path.split("/")
+            if len(parts) != 5 or parts[:3] != ["", "v1", "saves"]:
+                self.send_error(404)
+                return
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                if not 0 < size <= 512 * 1024**2:
+                    raise SaveError("Invalid snapshot size.")
+                raw_bytes = self.rfile.read(size)
+                game_meta = json.loads(self.headers.get("X-SaveSync-Game", "{}"))
+                with server.lock:
+                    imported = server.library.import_snapshot(game_meta, parts[4], raw_bytes)
+                    server.library.auto_apply_all()
+                self.send_json({"imported": imported})
+            except (SaveError, OSError, ValueError, KeyError, TypeError) as error:
+                self.send_json({"error": str(error)}, status=400)
+            return
         if self.path not in ("/v1/pair/start", "/v1/pair/finish"):
             self.send_error(404)
             return
@@ -293,7 +315,26 @@ class LANHandler(BaseHTTPRequestHandler):
             self.send_body(encode(games), "application/json")
             return
 
+        if self.path == "/v1/saves":
+            if server.library is None:
+                self.send_body(encode([]), "application/json")
+                return
+            with server.lock:
+                entries = server.library.list_store_snapshots()
+            self.send_body(encode(entries), "application/json")
+            return
+
         parts = self.path.split("/")
+        if len(parts) == 5 and parts[:3] == ["", "v1", "saves"] and server.library is not None:
+            try:
+                snap_file = server.library.snapshot_path(parts[3], parts[4])
+                data = snap_file.read_bytes()
+            except (SaveError, OSError):
+                self.send_error(404)
+                return
+            self.send_body(data, "application/zip")
+            return
+
         if len(parts) not in (4, 5) or parts[:3] != ["", "v1", "games"] or parts[3] not in offers:
             self.send_error(404)
             return
@@ -423,8 +464,9 @@ def discover_hosts(port=PORT, timeout=1.2):
 
 
 class Host:
-    def __init__(self, directory):
+    def __init__(self, directory, library=None):
         self.directory = directory
+        self.library = library
         self.server = None
         self.discovery = None
 
@@ -450,6 +492,7 @@ class Host:
             raise SaveError(f"Cannot listen on {address}:{port}. Check the address and port.") from error
         code = generate_pair_code()
         server.context = context
+        server.library = self.library
         server.address = address
         server.peer = f"{address}:{server.server_port}"
         server.pin = pin
@@ -590,6 +633,63 @@ class LANClient(http.client.HTTPSConnection):
         if len(data) > MAX_MANIFEST:
             raise SaveError("The PC sent a file list that was too large.")
         return json.loads(data)
+
+    def post_snapshot(self, game_meta, snap_id, raw_bytes):
+        headers = {
+            "Authorization": "Bearer " + self.secret,
+            "Content-Type": "application/zip",
+            "X-SaveSync-Game": encode(game_meta).decode("ascii"),
+        }
+        self.request("POST", f"/v1/saves/{game_meta['id']}/{snap_id}", body=raw_bytes, headers=headers)
+        response = self.getresponse()
+        body = response.read(8192)
+        if response.status != 200:
+            self.close()
+            raise SaveError(f"Could not send save snapshot to the PC (HTTP {response.status}).")
+        return json.loads(body) if body else {}
+
+
+def sync_saves_lan(invite, library):
+    """Two-way save snapshot sync between the Steam Deck and the PC over LAN."""
+    library.auto_publish_all()
+    local_before = {entry["game"]["id"]: set(entry["snapshots"]) for entry in library.list_store_snapshots()}
+    pulled = 0
+    pushed = 0
+    with closing(LANClient(invite)) as client:
+        remote_list = client.get_json("/v1/saves")
+        if not isinstance(remote_list, list):
+            raise SaveError("The PC returned an invalid save catalog.")
+        remote_map = {}
+        for item in remote_list:
+            if not isinstance(item, dict) or not isinstance(item.get("game"), dict):
+                continue
+            game_meta = item["game"]
+            gid = checked_id(game_meta.get("id", ""))
+            snaps = [checked_id(s) for s in item.get("snapshots", []) if isinstance(s, str)]
+            remote_map[gid] = set(snaps)
+            have = local_before.get(gid, set())
+            for snap_id in snaps:
+                if snap_id in have:
+                    continue
+                with client.get(f"/v1/saves/{gid}/{snap_id}") as response:
+                    raw = response.read(512 * 1024**2 + 1)
+                if len(raw) > 512 * 1024**2:
+                    raise SaveError("A save snapshot exceeded the transfer limit.")
+                if library.import_snapshot(game_meta, snap_id, raw):
+                    pulled += 1
+
+        local_after = library.list_store_snapshots()
+        for entry in local_after:
+            game_meta = entry["game"]
+            gid = game_meta["id"]
+            remote_have = remote_map.get(gid, set())
+            for snap_id in entry["snapshots"]:
+                if snap_id in remote_have:
+                    continue
+                raw = library.snapshot_path(gid, snap_id).read_bytes()
+                client.post_snapshot(game_meta, snap_id, raw)
+                pushed += 1
+    return {"pulled": pulled, "pushed": pushed}
 
 
 def catalog(invite):
