@@ -168,11 +168,16 @@ function renderTransfer(transfer) {
       $("transfer-locked").hidden = !transfer.locked;
       const list = $("transfer-offers");
       list.replaceChildren();
-      for (const game of transfer.games) {
-        const row = element("div", "", "version");
-        row.append(element("strong", game.title),
-          button("Stop sharing", () => transferAction("remove", { id: game.id })));
-        list.append(row);
+      if (transfer.games.length) {
+        list.append(element("h3", "Shared games"));
+        for (const game of transfer.games) {
+          const row = element("div", "", "version");
+          row.append(element("strong", game.title),
+            button("Stop sharing", () => transferAction("remove", { id: game.id })));
+          list.append(row);
+        }
+      } else if (!job.running) {
+        list.append(element("p", "No games are shared yet. Add a game’s install folder in the Game library, or share a folder below.", "hint"));
       }
     } else {
       const address = $("transfer-address");

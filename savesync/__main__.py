@@ -101,10 +101,16 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(data, dict):
                 raise SaveError("Invalid request data.")
             library = self.server.library
+            def map_and_share():
+                result = library.map_game(data)
+                if data.get("install", "").strip():
+                    self.server.transfers.share_library_game_if_active(result["id"])
+                return result
+
             actions = {
                 "/api/state": lambda: library.games(),
                 "/api/settings": lambda: library.settings(data),
-                "/api/map": lambda: library.map_game(data),
+                "/api/map": map_and_share,
                 "/api/review": lambda: library.review(data["id"]),
                 "/api/sync": lambda: {"message": library.sync(data)},
                 "/api/recover": lambda: {"message": library.recover(data["id"])},

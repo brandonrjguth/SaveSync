@@ -91,6 +91,7 @@ class GameTransfers:
             self.only("deck")
         if action == "start":
             self.host.start(data["address"])
+            self.share_library_games()
         elif action == "stop":
             if self.job.get("running"):
                 raise SaveError("Wait for the game folder scan to finish.")
@@ -121,10 +122,15 @@ class GameTransfers:
 
     def source_path(self, value):
         root = clean_path(value)
+        if path_kind(root) == "file":
+            raise SaveError(f"Choose the game’s folder rather than a file (for example: {root.parent}).")
+        if root in (Path(root.anchor), Path.home().resolve()):
+            raise SaveError("Choose a specific game folder rather than an entire drive or your home folder.")
+        if overlap(root, self.library.directory):
+            raise SaveError("The game folder cannot overlap SaveSync’s data folder.")
         shared = self.library.state()["shared"]
-        if (root in (Path(root.anchor), Path.home().resolve())
-                or overlap(root, self.library.directory) or (shared and overlap(root, Path(shared)))):
-            raise SaveError("Choose the game’s install folder.")
+        if shared and overlap(root, Path(shared) / "SaveSync-v1"):
+            raise SaveError("The game folder cannot overlap SaveSync’s shared snapshot folder (SaveSync-v1).")
         return root
 
     def start_job(self, label, run):
@@ -167,6 +173,59 @@ class GameTransfers:
             return {"message": "Game is ready to download on the Deck."}
 
         self.start_job("Preparing game folder", prepare)
+
+    def share_library_games(self, game_ids=None):
+        if self.role != "host" or self.host.server is None or self.job.get("running"):
+            return
+        state = self.library.state()
+        entries = []
+        for key, mapping in sorted(state["maps"].items(), key=lambda item: item[1].get("title", "").casefold()):
+            if game_ids is not None and key not in game_ids:
+                continue
+            install = (mapping.get("install") or "").strip()
+            if install:
+                entries.append((key, mapping.get("title", "").strip(), install))
+        if not entries:
+            return
+
+        def prepare():
+            shared_count = 0
+            skipped = []
+            for key, title, install in entries:
+                if self.stopping.is_set() or self.host.server is None:
+                    break
+                try:
+                    root = self.source_path(install)
+                    hint = save_hint(self.library, key, root)
+                    try:
+                        review = self.library.review(key)
+                        if review["status"] == "upload":
+                            self.library.sync({"id": key, "token": review["token"], "choice": "auto"})
+                    except SaveError:
+                        pass
+                    sources, _ = game_files(root)
+                    exes = [name for name in sorted(sources) if Path(name).suffix.lower() == ".exe"]
+                    executable = exes[0] if len(exes) == 1 else ""
+                    manifest = manifest_for(root, title, executable, hint)
+                    self.host.add(root, manifest)
+                    shared_count += 1
+                except (SaveError, OSError, ValueError, KeyError, TypeError) as error:
+                    skipped.append(f"{title}: {error}")
+            if shared_count and not skipped:
+                noun = "game is" if shared_count == 1 else "games are"
+                return {"message": f"{shared_count} library {noun} ready to download on the Deck."}
+            if shared_count and skipped:
+                return {"message": f"{shared_count} library game(s) ready. Skipped: {'; '.join(skipped[:3])}"}
+            if skipped:
+                return {"error": f"Could not share library game(s): {'; '.join(skipped[:3])}"}
+            return {}
+
+        label = "Preparing library game" if len(entries) == 1 else f"Preparing {len(entries)} library games"
+        self.start_job(label, prepare)
+
+    def share_library_game_if_active(self, game_id):
+        if self.role == "host" and self.host.server is not None and not self.job.get("running"):
+            self.share_library_games({game_id})
 
     def connect(self, data):
         raw_invite = str(data.get("invite") or "").strip()

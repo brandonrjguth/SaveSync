@@ -22,7 +22,10 @@ def data_home():
 
 
 def clean_path(value):
-    path = Path(value.strip()).expanduser()
+    text = value.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in ('"', "'"):
+        text = text[1:-1].strip()
+    path = Path(text).expanduser()
     if not path.is_absolute():
         raise SaveError("Enter an absolute path on this device.")
     return path.resolve()

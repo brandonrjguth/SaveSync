@@ -94,7 +94,7 @@
       </div>
       <section id="transfer-host" class="confirm-content" hidden>
         <form id="transfer-start-form">
-          <p>Share selected game folders with your Steam Deck when both devices are on the same network.</p>
+          <p>Share your games with your Steam Deck when both devices are on the same network. Games in your library with an install folder are shared automatically.</p>
           <label>PC network address<input id="transfer-address" name="address" list="transfer-addresses" required placeholder="192.168.1.25"></label>
           <datalist id="transfer-addresses"></datalist>
           <button type="submit" class="primary">Start sharing</button>
@@ -111,16 +111,19 @@
             <button type="button" id="transfer-stop">End session</button>
           </div>
           <div id="transfer-offers"></div>
-          <form id="share-form">
-            <label>Game title<input name="title" maxlength="160" required></label>
-            <label>Windows game folder<input name="folder" required placeholder="D:\Games\Example"></label>
-            <button type="button" id="transfer-scan">Find executables</button>
-            <label>Game executable relative to folder<input name="exe" list="transfer-exes" placeholder="Optional — choose on the Deck after download"></label>
-            <datalist id="transfer-exes"></datalist>
-            <label>Link a save entry<select name="save_id" id="transfer-save"><option value="">None</option></select></label>
-            <p class="hint">Close the game first. SaveSync uploads newer saves from a linked entry to the shared save folder. Leave the executable blank to pick it on the Deck.</p>
-            <button type="submit" class="primary">Share game</button>
-          </form>
+          <details id="share-form-details">
+            <summary>Share another game folder</summary>
+            <form id="share-form">
+              <label>Game title<input name="title" maxlength="160" required></label>
+              <label>Windows game folder<input name="folder" required placeholder="D:\Games\Example"></label>
+              <button type="button" id="transfer-scan">Find executables</button>
+              <label>Game executable relative to folder<input name="exe" list="transfer-exes" placeholder="Optional — choose on the Deck after download"></label>
+              <datalist id="transfer-exes"></datalist>
+              <label>Link a save entry<select name="save_id" id="transfer-save"><option value="">None</option></select></label>
+              <p class="hint">Close the game first. SaveSync uploads newer saves from a linked entry to the shared save folder. Leave the executable blank to pick it on the Deck.</p>
+              <button type="submit" class="primary">Share game</button>
+            </form>
+          </details>
         </div>
       </section>
       <section id="transfer-deck" class="confirm-content" hidden>
