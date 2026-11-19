@@ -22,6 +22,9 @@ interface Details {
 
 interface SteamWindow {
   SteamClient: {
+    GameSessions?: {
+      RegisterForAppLifetimeNotifications(callback: (event: { bRunning: boolean; unAppID: number }) => void): { unregister(): void };
+    };
     Apps: {
       AddShortcut(name: string, exe: string, start: string, options: string): Promise<number>;
       SetShortcutExe(id: number, exe: string): void;
@@ -31,11 +34,48 @@ interface SteamWindow {
       RegisterForAppDetails(id: number, callback: (details?: Details) => void): { unregister(): void };
     };
   };
+  SteamUIStore?: { RunningApps?: { appid: number }[] };
   appStore?: { GetAppOverviewByAppID(id: number): unknown };
 }
 
 const steam = window as unknown as SteamWindow;
 const pending = callable<[], Job[]>("jobs");
+type Binding = { id: string; auto?: boolean; download?: boolean; pending?: boolean };
+type SyncState = { bindings: Record<string, Binding>; games: Record<string, string> };
+type SaveResult = { latest?: { device: string; created: string }; pending?: boolean; error?: string; message?: string };
+const syncState = callable<[], SyncState>("game_sync_state");
+const syncConfig = callable<[number, string, boolean, boolean], void>("game_sync_config");
+const syncAction = callable<[string, string], SaveResult>("game_sync_action");
+const started = new Set<number>();
+const stopped = new Set<number>();
+let syncWork: Promise<unknown> = Promise.resolve();
+
+function runningApps() {
+  let visible: number[] = [];
+  try {
+    visible = (steam.SteamUIStore?.RunningApps || []).map(({ appid }) => appid >>> 0);
+  } catch { /* Lifecycle events remain available when Steam is rebuilding its UI. */ }
+  return new Set([...visible.filter((appid) => appid && !stopped.has(appid)), ...started]);
+}
+
+function serializeSync<T>(work: () => Promise<T>): Promise<T> {
+  const request = syncWork.then(work);
+  syncWork = request.catch((error) => console.error("SaveSync", error));
+  return request;
+}
+
+async function afterExit(appid: number, retry = false) {
+  const state = await syncState();
+  const game = state.bindings[appid];
+  if (!game || [...runningApps()].some((id) => state.bindings[id]?.id === game.id)) return;
+  const action = retry ? (game.pending ? "retry" : "") : game.download ? "download" : game.auto ? "upload" : "";
+  if (!action) return;
+  const result = await syncAction(game.id, action);
+  if (!result.error && action === "download") await syncConfig(appid, game.id, Boolean(game.auto), false);
+  if (!retry && (result.error || result.message)) {
+    toaster.toast({ title: state.games[game.id], body: result.error || result.message || "" });
+  }
+}
 const update = callable<[key: string, status: string, appid: number, error: string], void>("update");
 const delay = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 let processing = false;
@@ -131,9 +171,17 @@ async function processQueue(retry = false) {
 function Panel() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [error, setError] = useState("");
+  const [state, setState] = useState<SyncState>({ bindings: {}, games: {} });
+  const [active, setActive] = useState<number[]>([]);
+  const [selected, setSelected] = useState<number>();
+  const [details, setDetails] = useState<SaveResult>({});
+  const appid = selected && active.includes(selected) ? selected : active.length === 1 ? active[0] : 0;
+  const binding = state.bindings[appid];
   const refresh = async () => {
     try {
       setJobs(await pending());
+      setState(await syncState());
+      setActive([...runningApps()]);
       setError("");
     } catch (reason) {
       setError(String(reason));
@@ -144,8 +192,45 @@ function Panel() {
     const timer = setInterval(refresh, 2500);
     return () => clearInterval(timer);
   }, []);
+  useEffect(() => {
+    let valid = true;
+    setDetails({});
+    if (binding) void serializeSync(() => syncAction(binding.id, "status"))
+      .then((result) => { if (valid) setDetails(result); }).catch((reason) => { if (valid) setError(String(reason)); });
+    return () => { valid = false; };
+  }, [binding?.id]);
+  const configure = async (id: string, auto: boolean, download: boolean) => {
+    try {
+      await serializeSync(() => syncConfig(appid, id, auto, download));
+      await refresh();
+    } catch (reason) { setError(String(reason)); }
+  };
+  const upload = async () => {
+    if (!binding) return;
+    try { setDetails(await serializeSync(() => syncAction(binding.id, "upload"))); }
+    catch (reason) { setError(String(reason)); }
+  };
   return (
     <PanelSection title="SaveSync">
+      {active.length > 1 && active.map((id) => <PanelSectionRow key={id}>
+        <ButtonItem onClick={() => setSelected(id)}>{state.games[state.bindings[id]?.id] || "Steam app " + id}</ButtonItem>
+      </PanelSectionRow>)}
+      {binding && <>
+        <PanelSectionRow><div>{state.games[binding.id]}{details.latest && <div>
+          Latest cloud save · {details.latest.device} · {new Date(details.latest.created).toLocaleString()}
+        </div>}{details.pending && <div>Upload pending</div>}{<div>{details.error || details.message}</div>}</div></PanelSectionRow>
+        <PanelSectionRow><ButtonItem onClick={upload}>Upload saved checkpoint now</ButtonItem></PanelSectionRow>
+        <PanelSectionRow><ButtonItem onClick={() => configure(binding.id, Boolean(binding.auto), !binding.download)}>
+          {binding.download ? "Cancel download on exit" : "Download latest cloud save after exit"}
+        </ButtonItem></PanelSectionRow>
+        <PanelSectionRow><ButtonItem onClick={() => configure(binding.id, !binding.auto, Boolean(binding.download))}>
+          {binding.auto ? "Turn off auto-upload on exit" : "Turn on auto-upload on exit"}
+        </ButtonItem></PanelSectionRow>
+      </>}
+      {appid > 0 && !binding && Object.entries(state.games).map(([key, title]) => (
+        <PanelSectionRow key={key}><ButtonItem onClick={() => configure(key, false, false)}>Link to {title}</ButtonItem></PanelSectionRow>
+      ))}
+      {!active.length && <PanelSectionRow><div>Open a game to manage its saves here.</div></PanelSectionRow>}
       <PanelSectionRow>
         <ButtonItem onClick={async () => { await processQueue(true); await refresh(); }}>Retry Steam setup</ButtonItem>
       </PanelSectionRow>
@@ -161,6 +246,20 @@ function Panel() {
 
 export default definePlugin(() => {
   stopping = false;
+  const events = steam.SteamClient?.GameSessions?.RegisterForAppLifetimeNotifications?.(({ bRunning, unAppID }) => {
+    const appid = unAppID >>> 0;
+    if (bRunning) {
+      started.add(appid);
+      stopped.delete(appid);
+    } else {
+      started.delete(appid);
+      stopped.add(appid);
+      void serializeSync(() => afterExit(appid)).catch(console.error);
+    }
+  });
+  const retryTimer = setInterval(() => {
+    for (const appid of stopped) void serializeSync(() => afterExit(appid, true)).catch(console.error);
+  }, 45000);
   const timer = setInterval(() => void processQueue(), 2500);
   void processQueue();
   return {
@@ -171,6 +270,10 @@ export default definePlugin(() => {
     onDismount() {
       stopping = true;
       clearInterval(timer);
+      clearInterval(retryTimer);
+      events?.unregister();
+      started.clear();
+      stopped.clear();
     },
   };
 });

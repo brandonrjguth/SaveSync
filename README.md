@@ -49,6 +49,14 @@ Ludusavi checks Windows, native Linux, and Proton paths according to its scanner
 
 If a title already uses Steam Cloud and you want SaveSync to manage its progress, turn Steam Cloud off for that title on each device after confirming the current copy you want. Other launcher cloud-sync features can also overwrite the same files.
 
+## Sync around game sessions
+
+On Steam Deck, install the matching **SaveSync Decky Bridge** and SaveSync app updates. With a game open, open the bridge in Quick Access. Transferred games with a linked save location are matched to their Steam shortcut. For another game, map its save location in SaveSync first, then link the running game in the bridge. Enable **Auto-upload on exit**, queue a download until exit, or upload a checkpoint after the game has finished writing it. The bridge waits for Steam to report the game closed before applying a queued download. Automatic actions keep conflicting progress for you to review in SaveSync.
+
+On Windows, open a mapped game's page and select **Create sync shortcut**. Enter the actual game executable and any arguments. Launch it from the new desktop shortcut to attempt a cloud download before launch and upload after the game process exits. Choose the game executable directly, since a separate launcher can exit before the game. Existing shortcuts continue to launch the game normally.
+
+If the cloud is unavailable on exit, SaveSync keeps local progress and can retry a pending upload after the game closes again, or before the next Windows shortcut launch. A force-close can only upload files the game finished writing. If the wrapper or Steam itself is terminated, the exit hook may not run.
+
 ## Transfer a Windows game to the Deck
 
 This copies a portable Windows game folder to the Deck over your local network. SaveSync verifies each file before making the installation available. If paired to a cloud server, use **Game library** for saves after installing the game.

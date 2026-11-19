@@ -1,0 +1,131 @@
+"""Safe launch/exit actions shared by the Windows wrapper and Decky."""
+
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+from .cloud_sync import CloudSync
+from .library import checked_id, clean_path
+from .snapshots import SaveError, write_json
+
+
+def action(library, key, operation):
+    key = checked_id(key)
+    cloud = CloudSync(library)
+    if not cloud.settings():
+        raise SaveError("Pair this device with SaveSync Cloud first.")
+    queue = library.directory / "pending-upload" / (key + ".json")
+    if operation == "retry" and not queue.is_file():
+        return {"message": ""}
+    review = cloud.review(key)
+    remote = review["cloud"]
+    if operation == "status":
+        latest = next((v for v in review["versions"] if v["id"] == remote.get("latest")), None)
+        return {"latest": latest, "pending": queue.is_file(), "error": remote.get("error")}
+    if operation == "retry":
+        if json.loads(queue.read_bytes())["content"] != review.get("content_token"):
+            queue.unlink(missing_ok=True)
+            return {"message": "Local progress changed. Upload after closing the game."}
+        operation = "upload"
+    if operation not in ("upload", "download"):
+        raise SaveError("Unknown save action.")
+    if library.save_detection(key).is_file() or review["status"] == "interrupted":
+        raise SaveError("Finish save location detection or recovery first.")
+    if review["status"] == "conflict" or remote.get("conflict"):
+        raise SaveError("Save conflict. Choose a version in SaveSync.")
+    if remote.get("error"):
+        if operation == "download":
+            raise SaveError(remote["error"])
+        if review["status"] == "upload":
+            library.sync({"id": key, "token": review["token"], "choice": "local"},
+                         device_id=cloud.settings()["id"])
+        if review["status"] in ("upload", "current"):
+            write_json(queue, {"content": review["content_token"]})
+            return {"message": "Cloud unavailable. Local snapshot kept for retry."}
+        return {"message": "No local changes to upload."}
+    choice = "local" if operation == "upload" else remote["latest"]
+    if not choice or (choice == "local" and not review["count"]):
+        return {"message": "No save available for this action."}
+    if remote["current"]:
+        queue.unlink(missing_ok=True)
+        return {"message": "Up to date with the cloud."}
+    try:
+        message = cloud.sync({"id": key, "choice": choice, "token": review["token"],
+                              "cloud_token": remote["token"]}, automatic=True)
+    except SaveError:
+        if operation == "upload":
+            write_json(queue, {"content": review["content_token"]})
+        raise
+    queue.unlink(missing_ok=True)
+    return {"message": message}
+
+
+def launcher_path(library, key):
+    return library.directory / "launchers" / (checked_id(key) + ".json")
+
+
+def create_shortcut(library, data):
+    if os.name != "nt" or not getattr(sys, "frozen", False):
+        raise SaveError("Install the Windows SaveSync release to create game shortcuts.")
+    key = checked_id(data["id"])
+    game = library.state()["maps"].get(key)
+    if not game or not game.get("path") or not CloudSync(library).settings():
+        raise SaveError("Set a save location and pair this device with the cloud first.")
+    exe = clean_path(data["exe"])
+    if not exe.is_file() or exe.suffix.lower() != ".exe":
+        raise SaveError("Choose the game's Windows executable.")
+    game_args = data.get("args", "")
+    if not isinstance(game_args, str) or len(game_args) > 4000 or any(ord(char) < 32 for char in game_args):
+        raise SaveError("Enter valid game arguments.")
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", game["title"])[:75].strip(" .")
+    arguments = subprocess.list2cmdline(["--data-dir", str(library.directory), "--launch-game", key])
+    payload = {"target": sys.executable, "args": arguments, "name": f"SaveSync - {name} ({key[:8]}).lnk",
+               "icon": str(exe)}
+    script = """
+[Console]::InputEncoding = [Text.Encoding]::UTF8
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+$p = [Console]::ReadToEnd() | ConvertFrom-Json
+$shell = New-Object -ComObject WScript.Shell
+$path = Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) $p.name
+$link = $shell.CreateShortcut($path)
+$link.TargetPath = $p.target
+$link.Arguments = $p.args
+$link.IconLocation = $p.icon + ',0'
+$link.Save()
+[Console]::WriteLine($path)
+"""
+    process = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                              "$ErrorActionPreference='Stop';" + script], input=json.dumps(payload), text=True,
+                             encoding="utf-8", capture_output=True, timeout=15,
+                             creationflags=subprocess.CREATE_NO_WINDOW)
+    if process.returncode or not Path(process.stdout.strip()).is_file():
+        raise SaveError("Windows could not create the desktop shortcut.")
+    write_json(launcher_path(library, key), {"exe": str(exe), "args": game_args})
+    return {"message": "Desktop shortcut created: " + process.stdout.strip()}
+
+
+def launch(library, key, invoke):
+    config = json.loads(launcher_path(library, key).read_bytes())
+    exe = Path(config["exe"])
+    if not exe.is_file() or exe.suffix.lower() != ".exe":
+        raise SaveError("The game executable moved. Recreate its SaveSync shortcut.")
+    log = library.directory / "launcher.log"
+    with log.open("w", encoding="utf-8") as output:
+        def sync(operation):
+            try:
+                result = invoke(key, operation)
+                print(result["message"], file=output, flush=True)
+                return True
+            except (SaveError, OSError, ValueError) as error:
+                print(str(error), file=output, flush=True)
+                return False
+        if sync("retry"):
+            sync("download")
+        command = subprocess.list2cmdline([str(exe)]) + " " + config["args"]
+        game = subprocess.Popen(command, executable=str(exe), cwd=exe.parent)
+        result = game.wait()
+        sync("upload")
+        return result

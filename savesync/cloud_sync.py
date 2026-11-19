@@ -170,7 +170,7 @@ class CloudSync:
             "conflict": len(cloud_heads) > 1 or review["status"] == "conflict",
         })
 
-    def sync(self, data):
+    def sync(self, data, *, automatic=False):
         stored = self.settings()
         if not stored:
             return self.library.sync(data)
@@ -204,6 +204,12 @@ class CloudSync:
             review = self.library.review(game_id)
             if before["content_token"] != review["content_token"]:
                 raise SaveError("Local saves changed while cloud history was downloading. Check again before syncing.")
+            if automatic and review["status"] == "conflict":
+                raise SaveError("Save conflict. Choose a version in SaveSync.")
+            if automatic and choice != "local" and review["status"] != "download":
+                return "Local progress kept."
+            if automatic and choice == "local" and review["status"] in ("empty", "download"):
+                return "No local changes to upload."
             if choice == "local":
                 if not review["count"]:
                     raise SaveError("This device has no save files to upload.")

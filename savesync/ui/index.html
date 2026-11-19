@@ -93,6 +93,16 @@
       <footer><button type="button" data-close>Cancel</button><button type="submit" class="primary">Add game</button></footer>
     </form>
   </dialog>
+  <dialog id="shortcut-dialog">
+    <form id="shortcut-form">
+      <div class="dialog-heading"><h2>Create sync shortcut</h2><button type="button" data-close aria-label="Close">×</button></div>
+      <label>Game executable<input name="exe" required placeholder="D:\Games\Example\Game.exe"></label>
+      <label>Game arguments (optional)<input name="args" maxlength="4000"></label>
+      <p class="hint">Use the actual game executable. The desktop shortcut checks for a cloud save before launch and uploads changed saves when that process exits.</p>
+      <p class="form-error" role="alert" hidden></p>
+      <footer><button type="button" data-close>Cancel</button><button class="primary" type="submit">Create desktop shortcut</button></footer>
+    </form>
+  </dialog>
   <dialog id="discover-dialog">
     <form id="discover-form">
       <div class="dialog-heading"><h2>Find saves</h2><button type="button" data-close aria-label="Close">×</button></div>

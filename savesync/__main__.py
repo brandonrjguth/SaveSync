@@ -7,6 +7,7 @@ import os
 import secrets
 import subprocess
 import sys
+import time
 import traceback
 import webbrowser
 import zipfile
@@ -15,9 +16,10 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 from .discovery import find_ludusavi, install_ludusavi
+from . import automation
 from .game_transfers import GameTransfers
-from .library import Library, data_home
-from .snapshots import SaveError
+from .library import Library, checked_id, data_home
+from .snapshots import SaveError, write_json
 from .window import run_window, show_error
 
 
@@ -25,6 +27,10 @@ UI = Path(__file__).with_name("ui")
 STATIC = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
           "/app.css": ("app.css", "text/css"),
           "/transfers.js": ("transfers.js", "text/javascript")}
+
+
+class DeviceBusy(SaveError):
+    pass
 
 
 @contextmanager
@@ -40,8 +46,48 @@ def device_lock(directory):
                 import fcntl
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as error:
-            raise SaveError("SaveSync is already running with this device configuration.") from error
+            raise DeviceBusy("SaveSync is already running with this device configuration.") from error
         yield
+
+
+@contextmanager
+def local_service(library, port):
+    with device_lock(library.directory), LocalServer(("127.0.0.1", port), Handler) as server:
+        server.token = secrets.token_urlsafe(32)
+        marker = library.directory / "automation-endpoint.json"
+        write_json(marker, {"port": server.server_port, "token": server.token})
+        try:
+            yield server
+        finally:
+            marker.unlink(missing_ok=True)
+
+
+def invoke_automation(library, key, operation):
+    try:
+        with device_lock(library.directory):
+            return automation.action(library, key, operation)
+    except DeviceBusy:
+        marker = library.directory / "automation-endpoint.json"
+        for _ in range(15):
+            if marker.is_file():
+                break
+            time.sleep(0.1)
+        if not marker.is_file():
+            raise SaveError("SaveSync is starting. Try again shortly.") from None
+        endpoint = json.loads(marker.read_bytes())
+        connection = http.client.HTTPConnection("127.0.0.1", int(endpoint["port"]), timeout=180)
+        try:
+            connection.request("POST", "/api/automation", json.dumps({"id": key, "action": operation}),
+                               {"Content-Type": "application/json", "X-SaveSync-Token": endpoint["token"]})
+            response = connection.getresponse()
+            result = json.loads(response.read())
+            if response.status != 200:
+                raise SaveError(result.get("error", "SaveSync automation failed."))
+            return result
+        except (http.client.HTTPException, ValueError) as error:
+            raise SaveError("Could not reach the running SaveSync window.") from error
+        finally:
+            connection.close()
 
 
 class LocalServer(HTTPServer):
@@ -120,6 +166,8 @@ class Handler(BaseHTTPRequestHandler):
                 "/api/review": lambda: cloud.review(data["id"]),
                 "/api/sync": lambda: {"message": cloud.sync(data)},
                 "/api/cloud": lambda: cloud.action(data),
+                "/api/automation": lambda: automation.action(library, data["id"], data["action"]),
+                "/api/shortcut": lambda: automation.create_shortcut(library, data),
                 "/api/recover": lambda: {"message": library.recover(data["id"])},
                 "/api/discover": lambda: {"results": self.server.transfers.discover_saves(data)},
                 "/api/detect_save": lambda: self.server.transfers.detect_save_location(data),
@@ -171,16 +219,33 @@ def main(window_default=False):
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--no-browser", action="store_true", help="Print the address without opening it")
     mode.add_argument("--window", action="store_true", help="Open a dedicated SaveSync window")
+    mode.add_argument("--automation", nargs=2, metavar=("ACTION", "GAME_ID"))
+    mode.add_argument("--launch-game", metavar="GAME_ID")
     args = parser.parse_args()
     library = Library(args.data_dir)
+    if args.automation:
+        operation, key = args.automation
+        try:
+            print(json.dumps(invoke_automation(library, key, operation)))
+            return 0
+        except (SaveError, OSError, ValueError) as error:
+            print(json.dumps({"error": str(error)}))
+            return 1
+    if args.launch_game:
+        try:
+            key = checked_id(args.launch_game)
+            with device_lock(library.directory / "running-games" / key):
+                return automation.launch(library, key, lambda game, operation: invoke_automation(library, game, operation))
+        except (SaveError, OSError, ValueError) as error:
+            show_error(str(error))
+            return 1
     window_mode = args.window or (window_default and not args.no_browser)
     log_path = library.directory / "window.log"
     transfers = GameTransfers(library)
     try:
-        with device_lock(library.directory), LocalServer(("127.0.0.1", args.port), Handler) as server:
+        with local_service(library, args.port) as server:
             server.socket.settimeout(None)
             server.host = f"127.0.0.1:{server.server_port}"
-            server.token = secrets.token_urlsafe(32)
             server.library = library
             server.transfers = transfers
             server.window_mode = window_mode

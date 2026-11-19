@@ -224,6 +224,15 @@ async function showGame() {
     if (game.path) tools.append(button("Find local saves", () => openDiscovery(game)));
     if (game.can_detect) tools.append(button("Detect active save location", () => runSaveDetection(game, "start")));
     if (game.install && state.platform === "Windows") tools.append(button("Send to Steam Deck", () => openTransfer(game)));
+    if (game.path && state.cloud?.paired && state.platform === "Windows") {
+      tools.append(button("Create sync shortcut", () => {
+        const form = $("shortcut-form");
+        form.dataset.game = game.id;
+        form.reset();
+        if (game.install) form.elements.exe.placeholder = game.install + "\\Game.exe";
+        openDialog("shortcut-dialog");
+      }));
+    }
   }
   heading.append(element("h2", game.title), tools);
   detail.append(heading);
@@ -437,6 +446,11 @@ document.querySelectorAll("[data-close]").forEach((node) => {
   node.addEventListener("click", () => node.closest("dialog").close());
 });
 $("settings-button").addEventListener("click", openSettings);
+bindForm("shortcut-form", async (data) => {
+  const result = await api("shortcut", { ...data, id: $("shortcut-form").dataset.game });
+  $("shortcut-dialog").close();
+  notice(result.message);
+});
 $("cloud-settings-button").addEventListener("click", openCloudSettings);
 $("cloud-show-code").addEventListener("click", () => {
   const input = $("cloud-form").elements.code;
