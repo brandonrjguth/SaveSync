@@ -806,10 +806,19 @@ def download(invite, game_id, parent, report, prepare_install=None):
 def install_parent(value, library):
     path = clean_path(value)
     state = library.state()
-    if (path == Path(path.anchor) or overlap(path, library.directory)
-            or state["shared"] and overlap(path, Path(state["shared"]))
-            or any(path.is_relative_to(Path(mapping["path"])) for mapping in state["maps"].values())
-            or any(char in str(path) for char in '"\r\n')):
-        raise SaveError("Choose a separate install folder, such as ~/Games.")
+    if path == Path(path.anchor) or any(char in str(path) for char in '"\r\n'):
+        raise SaveError("Choose an install folder such as ~/Games.")
+    if overlap(path, library.directory):
+        raise SaveError("Choose an install folder separate from SaveSync's application data.")
+    if state["shared"]:
+        snapshots = Path(state["shared"]).resolve() / "SaveSync-v1"
+        store = snapshots.resolve()
+        if path.is_relative_to(store) or (store != snapshots and store.is_relative_to(path)):
+            raise SaveError("Choose an install folder outside the SaveSync-v1 snapshot folder.")
+    for mapping in state["maps"].values():
+        save_path = mapping.get("path")
+        if save_path and path.is_relative_to(Path(save_path).resolve()):
+            raise SaveError(f"{path} is inside the save location for {mapping['title']} ({save_path}). "
+                            "Set a dedicated save location for that game or choose an install folder outside it.")
     path.mkdir(parents=True, exist_ok=True)
     return path
