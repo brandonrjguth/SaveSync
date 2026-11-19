@@ -302,7 +302,7 @@ function renderReview(game, review, detail) {
     const history = element("details", "", "history");
     history.open = review.status === "conflict";
     const versions = element("div", "", "versions");
-    for (const version of review.versions) {
+    appendDeviceHistory(versions, review.versions, review.status === "conflict", (version) => {
       const row = element("div", "", "version");
       const label = element("div");
       label.append(element("strong", version.device),
@@ -314,10 +314,43 @@ function renderReview(game, review, detail) {
           { token: review.token, choice: version.id },
           "Close the game. Replace the local saves with this snapshot and make it the shared version?")));
       }
-      versions.append(row);
-    }
+      return row;
+    });
     history.append(element("summary", "Version history"), versions);
     detail.append(history);
+  }
+}
+
+function appendDeviceHistory(container, versions, showHeads, makeRow) {
+  const idsByName = new Map();
+  for (const version of versions) {
+    if (!version.device_id) continue;
+    if (!idsByName.has(version.device)) idsByName.set(version.device, new Set());
+    idsByName.get(version.device).add(version.device_id);
+  }
+  const groups = new Map();
+  for (const version of versions) {
+    const knownIds = idsByName.get(version.device);
+    const id = version.device_id || (knownIds?.size === 1 ? [...knownIds][0] : null);
+    const key = id ? "id:" + id : "name:" + version.device;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(version);
+  }
+  for (const entries of groups.values()) {
+    const group = element("div", "", "device-history");
+    const older = [];
+    for (const [index, version] of entries.entries()) {
+      if (index === 0 || (showHeads && version.head)) group.append(makeRow(version));
+      else older.push(version);
+    }
+    if (older.length) {
+      const more = element("details", "", "older-saves");
+      const label = older.length === 1 ? "older save" : "older saves";
+      more.append(element("summary", `${older.length} ${label} from ${entries[0].device}`));
+      older.forEach((version) => more.append(makeRow(version)));
+      group.append(more);
+    }
+    container.append(group);
   }
 }
 
@@ -344,7 +377,7 @@ function renderCloudHistory(game, review, detail) {
   const history = element("section", "", "versions");
   history.append(element("h3", "Save history"));
   if (!review.versions.length) history.append(element("p", "No snapshots yet."));
-  for (const version of review.versions) {
+  appendDeviceHistory(history, review.versions, cloud.conflict, (version) => {
     const row = element("div", "", "version");
     const description = element("div");
     const name = version.device + (version.this_device ? " · This device" : "");
@@ -353,8 +386,8 @@ function renderCloudHistory(game, review, detail) {
       + " · " + location + " · " + version.count + (version.count === 1 ? " file" : " files")));
     row.append(description);
     if (!cloud.error) row.append(button("Use this save", () => use(version.id)));
-    history.append(row);
-  }
+    return row;
+  });
   detail.append(history);
 }
 

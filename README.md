@@ -15,7 +15,7 @@ Download `SaveSync-SteamDeck.tar.gz` from the [GitHub Releases](https://github.c
 1. Right-click `SaveSync-SteamDeck.tar.gz` in Dolphin and choose **Extract > Extract archive here**.
 2. Open the extracted `SaveSync-SteamDeck` folder and double-click **Install SaveSync** (or run `./install.sh` in Konsole).
 3. The installer copies SaveSync to `~/.local/share/SaveSync` and creates **SaveSync** shortcuts on your Desktop and in the Application Menu. Re-running the installer with a newer release updates the app while keeping your settings and library intact.
-4. To also open **SaveSync** from **Gaming Mode**, open the Application Menu, right-click **SaveSync**, and select **Add to Steam**. In Gaming Mode, use the touchscreen or set the shortcut's Steam Input layout to **Keyboard (WASD) and Mouse**, and press **Steam + X** for the on-screen keyboard. The **Exit** button returns you to Steam.
+4. To also open **SaveSync** from **Gaming Mode**, open the Application Menu, right-click **SaveSync**, and select **Add to Steam**. In Gaming Mode, use the D-pad to move, **A** to select and **B** to dismiss a dialog. If the browser does not receive gamepad input, map the shortcut's D-pad to the arrow keys, **A** to **Enter** and **B** to **Escape** in Steam Input. **Steam + X** opens the on-screen keyboard. The **Exit** button returns you to Steam.
 
 SaveSync opens in its own window using Chrome, Chromium, Edge, Brave, or Firefox (whichever is installed from Discover or pre-installed). See [Valve's Steam Deck Desktop FAQ](https://help.steampowered.com/en/faqs/view/671A-4453-E8D2-323C) for the Non-Steam library workflow.
 
@@ -25,7 +25,7 @@ SaveSync opens in its own window using Chrome, Chromium, Edge, Brave, or Firefox
 
 1. Open **Settings > Cloud saves** on the first device. Enter your server's HTTPS URL and the bootstrap code from its administrator.
 2. Select **Pair another device** to generate an 8-character, single-use code. On the Deck or Android, enter the same HTTPS URL and that code. You can omit the dash and use lowercase. Select **Show code** to check what you typed. The code expires after 10 minutes. Each device keeps its pairing across restarts.
-3. After playing, close the game and select **Upload save** under its title. On the next device, open the same game entry and choose **Use latest from another device**, or pick any timestamped snapshot in **Save history**. Map the local save path first if needed. Choosing a historical version makes it the active cloud version and keeps the other versions available.
+3. After playing, close the game and select **Upload save** under its title. On the next device, open the same game entry and choose **Use latest from another device**, or pick a timestamped snapshot in **Save history**. The newest save from each device is visible by default. Expand **older saves** under a device to see the rest. Map the local save path first if needed. Choosing a historical version makes it the active cloud version and keeps the other versions available.
 
 ### Shared-folder saves
 
@@ -53,7 +53,7 @@ If a title already uses Steam Cloud and you want SaveSync to manage its progress
 
 On Steam Deck, install the matching **SaveSync Decky Bridge** and SaveSync app updates. With a game open, open the bridge in Quick Access. Transferred games with a linked save location are matched to their Steam shortcut. For another game, map its save location in SaveSync first, then link the running game in the bridge. Enable **Auto-upload on exit**, queue a download until exit, or upload a checkpoint after the game has finished writing it. The bridge waits for Steam to report the game closed before applying a queued download. Automatic actions keep conflicting progress for you to review in SaveSync.
 
-To pull a cloud save before playing on Steam Deck, close the game and open the bridge in Quick Access. Select the game and choose **Download latest save**. If progress conflicts, select the version you want in SaveSync's **Save history**.
+To pull a cloud save before playing on Steam Deck, open **SaveSync Bridge** in Quick Access with your games closed. Choose a game from the linked list, select **Download latest save**, and wait for the result before launching. Any game with a save location mapped on the Deck appears in the list. If progress conflicts, select the version you want in SaveSync's **Save history**.
 
 On Windows, open a mapped game's page and select **Create sync shortcut**. Select **Browse…** to choose the executable from the game's install folder, and add any launch arguments. Launch it from the new desktop shortcut to attempt a cloud download before launch and upload after the game process exits. Choose the game executable directly, since a separate launcher can exit before the game. Existing shortcuts continue to launch the game normally.
 

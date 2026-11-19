@@ -22,7 +22,8 @@ button {
 }
 button:hover { background: #334059; }
 button:disabled { opacity: .6; cursor: wait; }
-button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible {
+button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible,
+.controller-nav :focus {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
@@ -97,6 +98,9 @@ p, .hint { color: var(--muted); line-height: 1.55; }
 .version { padding: 12px 0; border-bottom: 1px solid var(--line); }
 .version:last-child { border-bottom: 0; }
 .version small { display: block; color: var(--muted); margin-top: 4px; }
+.device-history + .device-history { border-top: 1px solid var(--line); }
+.older-saves { margin: 0 0 8px; padding: 4px 0 4px 12px; }
+.older-saves summary { color: var(--muted); padding: 6px 0; }
 dialog {
   width: min(94vw, 620px);
   max-height: 88vh;

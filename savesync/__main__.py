@@ -26,7 +26,8 @@ from .window import run_window, show_error
 UI = Path(__file__).with_name("ui")
 STATIC = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
           "/app.css": ("app.css", "text/css"),
-          "/transfers.js": ("transfers.js", "text/javascript")}
+          "/transfers.js": ("transfers.js", "text/javascript"),
+          "/navigation.js": ("navigation.js", "text/javascript")}
 
 
 class DeviceBusy(SaveError):

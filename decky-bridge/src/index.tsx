@@ -34,7 +34,7 @@ interface SteamWindow {
       RegisterForAppDetails(id: number, callback: (details?: Details) => void): { unregister(): void };
     };
   };
-  SteamUIStore?: { RunningApps?: { appid: number }[] };
+  SteamUIStore?: { RunningApps?: { appid: number; local_per_client_data?: { display_status?: number } }[] };
   appStore?: { GetAppOverviewByAppID(id: number): unknown };
 }
 
@@ -50,17 +50,25 @@ const started = new Set<number>();
 const stopped = new Set<number>();
 let syncWork: Promise<unknown> = Promise.resolve();
 
-function runningApps() {
+function runningApps(requireSteam = false) {
   let visible: number[] = [];
   try {
-    visible = (steam.SteamUIStore?.RunningApps || []).map(({ appid }) => appid >>> 0);
-  } catch { /* Lifecycle events remain available when Steam is rebuilding its UI. */ }
+    const readyToLaunch = 11; // Steam can retain an exited app in RunningApps.
+    const apps = steam.SteamUIStore?.RunningApps;
+    if (requireSteam && !Array.isArray(apps)) throw new Error("Steam's running games are unavailable.");
+    visible = (apps || [])
+      .filter((app) => app.local_per_client_data?.display_status !== readyToLaunch)
+      .map(({ appid }) => appid >>> 0);
+  } catch (error) {
+    if (requireSteam) throw error;
+    // Lifecycle events remain available when Steam is rebuilding its UI.
+  }
   return new Set([...visible.filter((appid) => appid && !stopped.has(appid)), ...started]);
 }
 
 function canDownloadNow() {
   try {
-    return Array.isArray(steam.SteamUIStore?.RunningApps) && runningApps().size === 0;
+    return runningApps(true).size === 0;
   } catch {
     return false;
   }
@@ -179,24 +187,30 @@ async function processQueue(retry = false) {
 function Panel() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [error, setError] = useState("");
-  const [state, setState] = useState<SyncState>({ bindings: {}, games: {} });
+  const [libraryError, setLibraryError] = useState("");
+  const [state, setState] = useState<SyncState>();
   const [active, setActive] = useState<number[]>([]);
   const [selected, setSelected] = useState<number>();
-  const [closedGame, setClosedGame] = useState("");
-  const [details, setDetails] = useState<SaveResult>({});
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [libraryGame, setLibraryGame] = useState("");
+  const [details, setDetails] = useState<{ game: string; result: SaveResult }>();
+  const [downloading, setDownloading] = useState(false);
+  const games = state?.games || {};
+  const bindings = state?.bindings || {};
+  const titles = Object.entries(games).sort(([, a], [, b]) => a.localeCompare(b));
+  const showLibrary = libraryOpen || !active.length;
   const appid = selected && active.includes(selected) ? selected : active.length === 1 ? active[0] : 0;
-  const binding = state.bindings[appid];
-  const idleGame = !active.length && state.games[closedGame] ? closedGame : "";
-  const selectedGame = binding?.id || idleGame;
+  const binding = bindings[appid];
+  const selectedGame = showLibrary ? (games[libraryGame] ? libraryGame : "") : (binding?.id || "");
+  const result = details?.game === selectedGame ? details.result : undefined;
+  const failedJobs = jobs.filter((job) => job.status === "error");
   const refresh = async () => {
-    try {
-      setJobs(await pending());
-      setState(await syncState());
-      setActive([...runningApps()]);
-      setError("");
-    } catch (reason) {
-      setError(String(reason));
-    }
+    setActive([...runningApps()]);
+    await Promise.all([
+      pending().then(setJobs).catch((reason) => console.error("SaveSync shortcuts", reason)),
+      syncState().then((value) => { setState(value); setLibraryError(""); })
+        .catch((reason) => { setLibraryError(String(reason)); }),
+    ]);
   };
   useEffect(() => {
     void refresh();
@@ -205,12 +219,16 @@ function Panel() {
   }, []);
   useEffect(() => {
     let valid = true;
-    setDetails({});
-    if (selectedGame) void serializeSync(() => syncAction(selectedGame, "status"))
-      .then((result) => { if (valid) setDetails(result); }).catch((reason) => { if (valid) setError(String(reason)); });
+    if (selectedGame) void serializeSync(async () => {
+      if (valid) {
+        const status = await syncAction(selectedGame, "status");
+        if (valid) setDetails({ game: selectedGame, result: status });
+      }
+    }).catch((reason) => { if (valid) setDetails({ game: selectedGame, result: { error: String(reason) } }); });
     return () => { valid = false; };
   }, [selectedGame]);
   const configure = async (id: string, auto: boolean, download: boolean) => {
+    setError("");
     try {
       await serializeSync(() => syncConfig(appid, id, auto, download));
       await refresh();
@@ -218,27 +236,45 @@ function Panel() {
   };
   const upload = async () => {
     if (!binding) return;
-    try { setDetails(await serializeSync(() => syncAction(binding.id, "upload"))); }
+    setError("");
+    try {
+      const status = await serializeSync(() => syncAction(binding.id, "upload"));
+      setDetails({ game: binding.id, result: status });
+    }
     catch (reason) { setError(String(reason)); }
   };
   const downloadNow = async () => {
-    if (!idleGame) return;
+    if (!selectedGame || downloading) return;
+    setError("");
+    setDownloading(true);
     try {
-      const result = await serializeSync(() => canDownloadNow()
-        ? syncAction(idleGame, "download")
-        : Promise.resolve({error: "Close the game before downloading a save."}));
-      setDetails((previous) => ({...previous, ...result}));
+      const status = await serializeSync(() => canDownloadNow()
+        ? syncAction(selectedGame, "download")
+        : Promise.resolve({ error: "Close any running games and try again once Steam shows they have exited." }));
+      setDetails((previous) => ({
+        game: selectedGame,
+        result: { latest: previous?.game === selectedGame ? previous.result.latest : undefined, ...status },
+      }));
     } catch (reason) { setError(String(reason)); }
+    finally { setDownloading(false); }
   };
   return (
     <PanelSection title="SaveSync">
-      {active.length > 1 && active.map((id) => <PanelSectionRow key={id}>
-        <ButtonItem layout="below" onClick={() => setSelected(id)}>{state.games[state.bindings[id]?.id] || "Steam app " + id}</ButtonItem>
+      {!!active.length && <PanelSectionRow>
+        <ButtonItem layout="below" onClick={() => { setError(""); setLibraryOpen(!showLibrary); }}>
+          {showLibrary ? "Back to running games" : "Browse linked games"}
+        </ButtonItem>
+      </PanelSectionRow>}
+      {!showLibrary && active.length > 1 && active.map((id) => <PanelSectionRow key={id}>
+        <ButtonItem layout="below" onClick={() => { setError(""); setSelected(id); }}>
+          {games[bindings[id]?.id] || "Steam app " + id}
+        </ButtonItem>
       </PanelSectionRow>)}
-      {binding && <>
-        <PanelSectionRow><div>{state.games[binding.id]}{details.latest && <div>
-          Latest cloud save · {details.latest.device} · {new Date(details.latest.created).toLocaleString()}
-        </div>}{details.pending && <div>Upload pending</div>}{<div>{details.error || details.message}</div>}</div></PanelSectionRow>
+      {selectedGame && <PanelSectionRow><div>{games[selectedGame]}{result?.latest && <div>
+        Latest cloud save · {result.latest.device} · {new Date(result.latest.created).toLocaleString()}
+      </div>}{result?.pending && <div>Upload pending</div>}{(result?.error || result?.message) &&
+        <div>{result.error || result.message}</div>}</div></PanelSectionRow>}
+      {!showLibrary && binding && <>
         <PanelSectionRow><ButtonItem layout="below" onClick={upload}>Upload checkpoint</ButtonItem></PanelSectionRow>
         <PanelSectionRow><ButtonItem layout="below" onClick={() => configure(binding.id, Boolean(binding.auto), !binding.download)}>
           {binding.download ? "Cancel download" : "Download on exit"}
@@ -247,25 +283,29 @@ function Panel() {
           {binding.auto ? "Disable auto-upload" : "Enable auto-upload"}
         </ButtonItem></PanelSectionRow>
       </>}
-      {appid > 0 && !binding && Object.entries(state.games).map(([key, title]) => (
+      {!showLibrary && appid > 0 && !binding && titles.map(([key, title]) => (
         <PanelSectionRow key={key}><ButtonItem layout="below" onClick={() => configure(key, false, false)}>Link to {title}</ButtonItem></PanelSectionRow>
       ))}
-      {!active.length && (idleGame ? <>
-        <PanelSectionRow><div>{state.games[idleGame]}{details.latest && <div>
-          Latest cloud save · {details.latest.device} · {new Date(details.latest.created).toLocaleString()}
-        </div>}{<div>{details.error || details.message}</div>}</div></PanelSectionRow>
-        <PanelSectionRow><ButtonItem layout="below" onClick={downloadNow}>Download latest save</ButtonItem></PanelSectionRow>
-        <PanelSectionRow><ButtonItem layout="below" onClick={() => setClosedGame("")}>Choose another game</ButtonItem></PanelSectionRow>
-      </> : Object.entries(state.games).map(([key, title]) => (
-        <PanelSectionRow key={key}><ButtonItem layout="below" onClick={() => setClosedGame(key)}>{title}</ButtonItem></PanelSectionRow>
+      {showLibrary && (selectedGame ? <>
+        <PanelSectionRow><ButtonItem layout="below" disabled={downloading} onClick={downloadNow}>
+          {downloading ? "Downloading…" : "Download latest save"}
+        </ButtonItem></PanelSectionRow>
+        <PanelSectionRow><ButtonItem layout="below" disabled={downloading} onClick={() => { setError(""); setLibraryGame(""); }}>
+          Choose another game
+        </ButtonItem></PanelSectionRow>
+      </> : titles.map(([key, title]) => (
+        <PanelSectionRow key={key}><ButtonItem layout="below" onClick={() => setLibraryGame(key)}>{title}</ButtonItem></PanelSectionRow>
       )))}
-      <PanelSectionRow>
+      {!libraryError && !state && <PanelSectionRow><div>Loading linked games…</div></PanelSectionRow>}
+      {state && !titles.length && !libraryError && <PanelSectionRow>
+        <div>Link a save folder for a game in the SaveSync app to see it here.</div>
+      </PanelSectionRow>}
+      {libraryError && <PanelSectionRow><div>Could not load linked games. {libraryError}</div></PanelSectionRow>}
+      {error && <PanelSectionRow><div>{error}</div></PanelSectionRow>}
+      {!!failedJobs.length && <PanelSectionRow>
         <ButtonItem layout="below" onClick={async () => { await processQueue(true); await refresh(); }}>Retry Steam setup</ButtonItem>
-      </PanelSectionRow>
-      <PanelSectionRow>
-        <div>{error || (jobs.length ? "" : "Download a game in SaveSync to add it here.")}</div>
-      </PanelSectionRow>
-      {jobs.map((job) => (
+      </PanelSectionRow>}
+      {jobs.filter((job) => job.status !== "added").map((job) => (
         <PanelSectionRow key={job.id}><div>{job.title} · {job.error || job.status}</div></PanelSectionRow>
       ))}
     </PanelSection>
