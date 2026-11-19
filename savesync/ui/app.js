@@ -145,7 +145,7 @@ function openMap(game, path = game?.path || "", mode = game?.mode || "auto", tit
   const fields = form.elements;
   fields.title.value = title;
   fields.install.value = game?.install || "";
-  fields.install.closest("label").hidden = state.platform !== "Windows";
+  fields.install.closest("label").hidden = false;
   fields.path.value = path;
   fields.mode.value = mode;
   fields.title.readOnly = Boolean(game);
@@ -168,6 +168,7 @@ function openDiscovery(game) {
   const fields = $("discover-form").elements;
   fields.title.value = game?.title || "";
   fields.title.readOnly = Boolean(game);
+  fields.install.value = game?.install || "";
   fields.prefix.value = suggestedPrefix(game);
   $("scan-results").replaceChildren();
   openDialog("discover-dialog");
@@ -414,8 +415,13 @@ function renderMapCandidates(candidates) {
 
 async function detectSaveLocation(form, data) {
   let scan;
+  const current = state.games.find((entry) => entry.id === form.dataset.game);
   try {
-    scan = await api("discover", { title: data.title });
+    scan = await api("discover", {
+      title: data.title,
+      install: data.install || current?.install || "",
+      prefix: suggestedPrefix(current),
+    });
   } catch (error) {
     const box = $("map-candidates");
     box.replaceChildren(element("p", error.message));

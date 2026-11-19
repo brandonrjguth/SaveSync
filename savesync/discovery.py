@@ -51,14 +51,88 @@ def find_ludusavi(configured):
     return shutil.which("ludusavi")
 
 
-def scan_saves(executable, title="", prefix=""):
-    command = find_ludusavi(executable)
-    if not command:
-        raise SaveError("Ludusavi is not installed. Select Download Ludusavi to set it up automatically, "
-                        "or enter the save location manually.")
+SAVE_DIR_NAMES = {
+    "save", "saves", "savedata", "savegame", "savegames", "savefiles",
+    "userdata", "profile", "profiles", "slots", "saveslots",
+}
+SAVE_FILE_EXTS = {".sav", ".save", ".slot", ".srm", ".sol", ".es3"}
+SKIP_DIR_NAMES = {
+    "savesync-v1", "_commonredist", "redist", "directx", "vcredist",
+    "engine", "monobleedingedge", "managed", "resources", "node_modules",
+    ".git", "shader", "shaders", "movies", "videos", "audio", "music", "textures",
+}
+
+
+def _strip_quotes(value):
+    text = value.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in ('"', "'"):
+        return text[1:-1].strip()
+    return text
+
+
+def scan_game_folder(folder, title=""):
+    """Look inside a game's install folder for portable save folders or save files."""
+    root = Path(_strip_quotes(str(folder))).expanduser()
+    if not root.is_dir():
+        return []
+    found = []
+    seen = set()
+    visited_dirs = 0
+    for current, directories, files in os.walk(root):
+        visited_dirs += 1
+        if visited_dirs > 400 or len(found) >= 80:
+            break
+        base = Path(current)
+        depth = len(base.relative_to(root).parts)
+        if depth >= 4:
+            directories[:] = []
+        else:
+            directories[:] = [
+                name for name in sorted(directories)
+                if name.casefold() not in SKIP_DIR_NAMES and not name.startswith(".")
+            ]
+        in_save_dir = any(part.casefold() in SAVE_DIR_NAMES for part in base.relative_to(root).parts)
+        for name in sorted(files):
+            file_path = base / name
+            suffix = file_path.suffix.lower()
+            if in_save_dir or suffix in SAVE_FILE_EXTS:
+                # Skip huge binary assets (> 64 MiB) even if named .sav/.dat
+                try:
+                    if not file_path.is_file() or file_path.stat().st_size > 64 * 1024**2:
+                        continue
+                except OSError:
+                    continue
+                resolved = str(file_path)
+                if resolved not in seen:
+                    seen.add(resolved)
+                    found.append({"path": resolved, "folder": str(base)})
+                    if len(found) >= 80:
+                        break
+    if not found:
+        return []
+    label = title.strip() or re.sub(r"-[0-9a-f]{8}$", "", root.name)
+    return [{"title": label, "files": found}]
+
+
+def _savesync_prefixes():
+    base = Path.home() / ".local/share/savesync-prefixes"
+    if not base.is_dir():
+        return []
+    prefixes = []
+    try:
+        for entry in sorted(base.iterdir()):
+            pfx = entry / "pfx"
+            if (pfx / "drive_c").is_dir():
+                prefixes.append(pfx)
+    except OSError:
+        pass
+    return prefixes
+
+
+def _run_ludusavi(command, title="", prefix=""):
     args = [str(command), "backup", "--preview", "--api", "--no-cloud-sync"]
     if prefix:
-        folder = Path(prefix).expanduser()
+        folder = Path(_strip_quotes(str(prefix))).expanduser()
         if not folder.is_absolute() or not (folder / "drive_c").is_dir():
             raise SaveError("Enter a Wine or Proton prefix with a drive_c folder, such as compatdata/<id>/pfx.")
         args.extend(["--wine-prefix", str(folder)])
@@ -77,9 +151,8 @@ def scan_saves(executable, title="", prefix=""):
         report = json.loads(process.stdout)
     except ValueError:
         raise SaveError(process.stderr.strip()[-1500:] or "Ludusavi did not return a scan report.") from None
-    if report.get("errors", {}).get("unknownGames") and title:
-        raise SaveError("Ludusavi did not recognize that title. Try its exact store name or enter a save path manually.")
-    if process.returncode:
+    unknown = bool(report.get("errors", {}).get("unknownGames") and title)
+    if process.returncode and not unknown:
         raise SaveError(process.stderr.strip()[-1500:] or "Ludusavi could not complete the save scan.")
     results = []
     for name, entry in sorted(report.get("games", {}).items(), key=lambda pair: pair[0].casefold()):
@@ -99,7 +172,70 @@ def scan_saves(executable, title="", prefix=""):
                 "files": [{"path": filename, "folder": str(Path(filename).parent)}
                           for filename in sorted(known) + sorted(untagged)],
             })
-    return results
+    return results, unknown
+
+
+def _merge_results(groups):
+    merged = {}
+    for group in groups:
+        for item in group:
+            key = item["title"].casefold()
+            if key not in merged:
+                merged[key] = {"title": item["title"], "files": [], "_seen": set()}
+            target = merged[key]
+            for entry in item["files"]:
+                if entry["path"] not in target["_seen"]:
+                    target["_seen"].add(entry["path"])
+                    target["files"].append(entry)
+    return [{"title": item["title"], "files": item["files"]}
+            for item in sorted(merged.values(), key=lambda entry: entry["title"].casefold())
+            if item["files"]]
+
+
+def scan_saves(executable, title="", prefix="", install=""):
+    folder_groups = []
+    if install and install.strip():
+        install_path = Path(_strip_quotes(install)).expanduser()
+        if not install_path.is_dir():
+            raise SaveError("The game install folder does not exist on this device.")
+        folder_groups.append(scan_game_folder(install_path, title))
+    elif os.name != "nt":
+        games_dir = Path.home() / "Games"
+        if games_dir.is_dir():
+            try:
+                for entry in sorted(games_dir.iterdir()):
+                    if not entry.is_dir() or entry.name.startswith("."):
+                        continue
+                    if title and title.casefold() not in entry.name.casefold():
+                        continue
+                    folder_groups.append(scan_game_folder(entry, title if title else ""))
+            except OSError:
+                pass
+
+    command = find_ludusavi(executable)
+    if not command:
+        merged = _merge_results(folder_groups)
+        if merged:
+            return merged
+        raise SaveError("Ludusavi is not installed. Select Download Ludusavi to set it up automatically, "
+                        "or enter the save location manually.")
+
+    ludusavi_groups = []
+    primary, unknown = _run_ludusavi(command, title=title, prefix=prefix)
+    ludusavi_groups.append(primary)
+    if os.name != "nt" and not prefix:
+        for pfx in _savesync_prefixes():
+            try:
+                extra, _ = _run_ludusavi(command, title=title, prefix=str(pfx))
+                ludusavi_groups.append(extra)
+            except SaveError:
+                pass
+
+    merged = _merge_results([*ludusavi_groups, *folder_groups])
+    if not merged and unknown and title:
+        raise SaveError("Ludusavi did not recognize that title and no save files were found in the game folder. "
+                        "Try its exact store name, provide the game folder, or enter a save path manually.")
+    return merged
 
 
 def safe_member(name):

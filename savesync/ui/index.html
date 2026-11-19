@@ -62,7 +62,7 @@
     <form id="map-form">
       <div class="dialog-heading"><h2 id="map-heading">Add game</h2><button type="button" data-close aria-label="Close">×</button></div>
       <label>Game title<input name="title" required maxlength="160"></label>
-      <label>Game install folder<input name="install" placeholder="Optional — e.g. D:\Games\Example — used to transfer the game to a Steam Deck"></label>
+      <label>Game install folder<input name="install" placeholder="Optional — e.g. D:\Games\Example or /home/deck/Games/Example"></label>
       <label>Save location<input name="path" placeholder="Leave blank to detect automatically, or enter an absolute path"></label>
       <input type="hidden" name="mode" value="auto">
       <div id="map-candidates" aria-live="polite"></div>
@@ -75,6 +75,7 @@
     <form id="discover-form">
       <div class="dialog-heading"><h2>Find saves</h2><button type="button" data-close aria-label="Close">×</button></div>
       <label>Game title<input name="title" placeholder="Leave blank to scan for all detected games"></label>
+      <label>Game install folder<input name="install" placeholder="Optional — e.g. /home/deck/Games/Example — scans inside this folder too"></label>
       <details><summary>Wine and Proton options</summary>
         <label>Wine or Proton prefix<input name="prefix" placeholder="/path/to/compatdata/12345/pfx"></label>
       </details>

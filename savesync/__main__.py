@@ -115,7 +115,8 @@ class Handler(BaseHTTPRequestHandler):
                 "/api/sync": lambda: {"message": library.sync(data)},
                 "/api/recover": lambda: {"message": library.recover(data["id"])},
                 "/api/discover": lambda: {"results": scan_saves(
-                    library.state()["ludusavi"], data.get("title", "").strip(), data.get("prefix", "").strip())},
+                    library.state()["ludusavi"], data.get("title", "").strip(),
+                    data.get("prefix", "").strip(), data.get("install", "").strip())},
                 "/api/ludusavi": lambda: ludusavi_action(library, data),
             }
             if self.path == "/api/exit" and self.server.window_mode:
