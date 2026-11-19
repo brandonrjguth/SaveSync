@@ -124,6 +124,8 @@ function openCloudSettings() {
   const paired = Boolean(state.cloud?.paired);
   form.elements.url.value = state.cloud?.url || "";
   form.elements.code.value = "";
+  form.elements.code.type = "password";
+  $("cloud-show-code").setAttribute("aria-pressed", "false");
   $("cloud-pair-fields").hidden = paired;
   $("cloud-paired").hidden = !paired;
   $("cloud-pair").hidden = paired;
@@ -436,6 +438,12 @@ document.querySelectorAll("[data-close]").forEach((node) => {
 });
 $("settings-button").addEventListener("click", openSettings);
 $("cloud-settings-button").addEventListener("click", openCloudSettings);
+$("cloud-show-code").addEventListener("click", () => {
+  const input = $("cloud-form").elements.code;
+  const reveal = input.type === "password";
+  input.type = reveal ? "text" : "password";
+  $("cloud-show-code").setAttribute("aria-pressed", String(reveal));
+});
 bindForm("cloud-form", async (data) => {
   if (state.cloud?.paired) return;
   const result = await api("cloud", { action: "pair", ...data });

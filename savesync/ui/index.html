@@ -64,8 +64,9 @@
       <div class="dialog-heading"><h2 id="cloud-heading">Cloud saves</h2><button type="button" data-close aria-label="Close">×</button></div>
       <div id="cloud-pair-fields" class="confirm-content">
         <label>Server address<input name="url" type="url" placeholder="https://saves.example.com"></label>
-        <label>Pairing code<input name="code" type="password" autocomplete="off"></label>
-        <p class="hint">Use the first-device code from the server or generate a code on an already paired device.</p>
+        <label>Pairing code<input name="code" type="password" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+        <button type="button" id="cloud-show-code" aria-pressed="false">Show code</button>
+        <p class="hint">On a paired device, use Pair another device to get an 8-character code. Only the first device needs a server setup code.</p>
       </div>
       <div id="cloud-paired" class="confirm-content" hidden>
         <p id="cloud-url"></p>

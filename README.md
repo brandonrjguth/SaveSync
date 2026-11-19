@@ -24,7 +24,7 @@ SaveSync opens in its own window using Chrome, Chromium, Edge, Brave, or Firefox
 ### Cloud saves
 
 1. Open **Settings > Cloud saves** on the first device. Enter your server's HTTPS URL and the bootstrap code from its administrator.
-2. Select **Pair another device** to generate a single-use code. On the Deck or Android, enter the same HTTPS URL and that code. The code expires after 10 minutes. Each device keeps its pairing across restarts.
+2. Select **Pair another device** to generate an 8-character, single-use code. On the Deck or Android, enter the same HTTPS URL and that code. You can omit the dash and use lowercase. Select **Show code** to check what you typed. The code expires after 10 minutes. Each device keeps its pairing across restarts.
 3. After playing, close the game and select **Upload save** under its title. On the next device, open the same game entry and choose **Use latest from another device**, or pick any timestamped snapshot in **Save history**. Map the local save path first if needed. Choosing a historical version makes it the active cloud version and keeps the other versions available.
 
 ### Shared-folder saves

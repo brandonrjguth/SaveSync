@@ -22,6 +22,10 @@ from .snapshots import MAX_BYTES, SaveError, encode, read_snapshot
 MAX_ARCHIVE = MAX_BYTES + 128 * 1024**2
 INVITE_TTL = 600
 TOKEN_LENGTH = 43
+INVITE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+INVITE_LENGTH = 8
+PAIR_WINDOW = 60
+PAIR_FAILURE_LIMIT = 30
 
 
 def secret_digest(value):
@@ -38,6 +42,7 @@ class CloudStore:
                 PRAGMA journal_mode=WAL;
                 CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, token TEXT UNIQUE NOT NULL, name TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS invites (digest TEXT PRIMARY KEY, expires INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS pair_failures (id INTEGER PRIMARY KEY, expires INTEGER NOT NULL, count INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS games (id TEXT PRIMARY KEY, title TEXT NOT NULL, mode TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS snapshots (
                     game TEXT NOT NULL REFERENCES games(id), id TEXT NOT NULL,
@@ -60,6 +65,13 @@ class CloudStore:
             row = db.execute("SELECT id FROM devices WHERE token=?", (secret_digest(token),)).fetchone()
         return row[0] if row else None
 
+    def invite_digest(self, code):
+        normalized = "".join(code.split()).replace("-", "").upper()
+        if len(normalized) == INVITE_LENGTH and all(char in INVITE_ALPHABET for char in normalized):
+            return hmac.new(self.bootstrap.encode(), normalized.encode(), hashlib.sha256).hexdigest()
+        # Accept outstanding invites from before the shorter format until they expire.
+        return secret_digest(code)
+
     def enroll(self, code, name):
         if not isinstance(code, str) or not 1 <= len(code) <= 256:
             return None
@@ -67,11 +79,19 @@ class CloudStore:
             raise SaveError("Enter a device name of up to 80 characters.")
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
+            now = int(time.time())
+            failures = db.execute("SELECT expires, count FROM pair_failures WHERE id=1").fetchone()
+            if failures and failures[0] > now and failures[1] >= PAIR_FAILURE_LIMIT:
+                raise PairingLimited("Too many incorrect pairing attempts. Wait a minute and try again.")
             first_device = not db.execute("SELECT 1 FROM devices LIMIT 1").fetchone()
             if first_device:
-                if not hmac.compare_digest(secret_digest(code), secret_digest(self.bootstrap)):
-                    return None
-            elif not db.execute("DELETE FROM invites WHERE digest=? AND expires>?", (secret_digest(code), time.time())).rowcount:
+                accepted = hmac.compare_digest(secret_digest(code), secret_digest(self.bootstrap))
+            else:
+                accepted = db.execute("DELETE FROM invites WHERE digest=? AND expires>?",
+                                      (self.invite_digest(code), now)).rowcount != 0
+            if not accepted:
+                expires, count = failures if failures and failures[0] > now else (now + PAIR_WINDOW, 0)
+                db.execute("INSERT OR REPLACE INTO pair_failures VALUES (1, ?, ?)", (expires, count + 1))
                 return None
             device = secrets.token_hex(16)
             token = secrets.token_urlsafe(32)
@@ -79,14 +99,17 @@ class CloudStore:
             return {"id": device, "token": token}
 
     def invite(self):
-        code = secrets.token_urlsafe(32)
         expires = int(time.time()) + INVITE_TTL
         with self.connection() as db:
             db.execute("DELETE FROM invites WHERE expires<=?", (time.time(),))
             if db.execute("SELECT count(*) FROM invites").fetchone()[0] >= 32:
                 raise SaveError("Too many active pairing codes. Wait for an unused code to expire.")
-            db.execute("INSERT INTO invites VALUES (?, ?)", (secret_digest(code), expires))
-        return {"code": code, "expires": expires}
+            while True:
+                code = "".join(secrets.choice(INVITE_ALPHABET) for _ in range(INVITE_LENGTH))
+                if db.execute("INSERT OR IGNORE INTO invites VALUES (?, ?)",
+                              (self.invite_digest(code), expires)).rowcount:
+                    break
+        return {"code": f"{code[:4]}-{code[4:]}", "expires": expires}
 
     def unpair(self, device):
         with self.connection() as db:
@@ -150,6 +173,10 @@ class CloudStore:
             db.execute("INSERT OR IGNORE INTO games VALUES (?,?,?)", (key, info["title"], info["mode"]))
             db.execute("INSERT INTO snapshots VALUES (?,?,?,?,?)",
                        (key, snapshot, json.dumps(summary), json.dumps(info["parents"]), digest))
+
+
+class PairingLimited(SaveError):
+    pass
 
 
 class CloudHandler(BaseHTTPRequestHandler):
@@ -235,6 +262,8 @@ class CloudHandler(BaseHTTPRequestHandler):
                 self.json_reply(200, {"ok": True})
                 return
             self.json_reply(404, {"error": "Unknown cloud request."})
+        except PairingLimited as error:
+            self.json_reply(429, {"error": str(error)})
         except (SaveError, ValueError, KeyError, TypeError) as error:
             self.json_reply(400, {"error": str(error)})
         except (OSError, sqlite3.Error):
