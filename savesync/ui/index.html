@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="savesync-token" content="__SESSION_TOKEN__">
+  <meta name="savesync-window" content="__WINDOW_MODE__">
+  <title>SaveSync</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+  <script src="/transfers.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">↔</span> SaveSync</div>
+    <div class="top-right">
+      <span id="device-label" class="device"></span>
+      <button type="button" id="settings-button">Settings</button>
+      <button type="button" id="exit-button" hidden>Exit</button>
+    </div>
+  </header>
+  <main class="shell">
+    <header class="page-heading">
+      <div><h1>Game library</h1><p id="shared-label"></p></div>
+      <div class="actions">
+        <button type="button" id="transfer-button" hidden>Game transfer</button>
+        <button type="button" id="refresh-button">Refresh</button>
+        <button type="button" id="discover-button">Find saves</button>
+        <button type="button" id="add-button" class="primary">Add game</button>
+      </div>
+    </header>
+    <p id="notice" class="notice" role="status" hidden></p>
+    <div class="layout">
+      <nav id="games" class="library" aria-label="Games"></nav>
+      <section id="detail" class="panel" aria-label="Game details"></section>
+    </div>
+  </main>
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-message">
+    <div class="confirm-content">
+      <h2 id="confirm-title">Confirm save action</h2>
+      <p id="confirm-message"></p>
+      <footer>
+        <button type="button" data-close autofocus>Cancel</button>
+        <button type="button" id="confirm-button" class="primary">Continue</button>
+      </footer>
+    </div>
+  </dialog>
+  <dialog id="settings-dialog">
+    <form id="settings-form">
+      <div class="dialog-heading"><h2>Settings</h2><button type="button" data-close aria-label="Close">×</button></div>
+      <label>Device name<input name="device" maxlength="80" required></label>
+      <label>Shared folder<input name="shared" placeholder="Enter the local path to a shared or mirrored folder"></label>
+      <p class="hint">Point each device to the same folder or to its local copy. Make snapshot files available offline if your provider supports it.</p>
+      <label>Ludusavi executable<input name="ludusavi" placeholder="Leave blank to use Ludusavi from PATH"></label>
+      <p class="hint">Required for discovery. Manual save locations work without Ludusavi.</p>
+      <p class="form-error" role="alert" hidden></p>
+      <footer><button type="button" data-close>Cancel</button><button class="primary" type="submit">Save settings</button></footer>
+    </form>
+  </dialog>
+  <dialog id="map-dialog">
+    <form id="map-form">
+      <div class="dialog-heading"><h2 id="map-heading">Add game</h2><button type="button" data-close aria-label="Close">×</button></div>
+      <label>Game title<input name="title" required maxlength="160"></label>
+      <label>Location type<select name="mode"><option value="directory">Save folder</option><option value="file">Single save file</option></select></label>
+      <label>Local path<input name="path" required placeholder="Enter an absolute path"></label>
+      <p class="hint">For a folder, use a dedicated save directory. Sync applies the full set of files in it, including deletions.</p>
+      <p class="form-error" role="alert" hidden></p>
+      <footer><button type="button" data-close>Cancel</button><button type="submit" class="primary">Save location</button></footer>
+    </form>
+  </dialog>
+  <dialog id="discover-dialog">
+    <form id="discover-form">
+      <div class="dialog-heading"><h2>Find saves</h2><button type="button" data-close aria-label="Close">×</button></div>
+      <label>Game title<input name="title" placeholder="Leave blank to scan for all detected games"></label>
+      <details><summary>Wine and Proton options</summary>
+        <label>Wine or Proton prefix<input name="prefix" placeholder="/path/to/compatdata/12345/pfx"></label>
+      </details>
+      <p class="hint">Ludusavi finds existing save files. If the game is newly installed, launch it once and create a save.</p>
+      <p class="form-error" role="alert" hidden></p>
+      <button type="submit" class="primary">Scan device</button>
+      <div id="scan-results" aria-live="polite"></div>
+    </form>
+  </dialog>
+  <dialog id="transfer-dialog" aria-labelledby="transfer-title">
+    <div class="confirm-content">
+      <div class="dialog-heading"><h2 id="transfer-title">Game transfer</h2><button type="button" data-close aria-label="Close">×</button></div>
+      <p id="transfer-message" role="status" hidden></p>
+      <div id="transfer-progress" role="status" hidden>
+        <p id="transfer-job-label"></p>
+        <progress aria-label="Transfer progress"></progress>
+      </div>
+      <section id="transfer-host" class="confirm-content" hidden>
+        <form id="transfer-start-form">
+          <p>Share selected game folders with your Steam Deck when both devices are on the same network.</p>
+          <label>PC network address<input id="transfer-address" name="address" list="transfer-addresses" required placeholder="192.168.1.25"></label>
+          <datalist id="transfer-addresses"></datalist>
+          <button type="submit" class="primary">Start sharing</button>
+        </form>
+        <div id="transfer-offer" class="confirm-content" hidden>
+          <label>Connection code<input id="transfer-code" readonly></label>
+          <div class="actions">
+            <button type="button" id="transfer-copy">Copy code</button>
+            <button type="button" id="transfer-stop">End session</button>
+          </div>
+          <div id="transfer-offers"></div>
+          <form id="share-form">
+            <label>Game title<input name="title" maxlength="160" required></label>
+            <label>Windows game folder<input name="folder" required placeholder="D:\Games\Example"></label>
+            <button type="button" id="transfer-scan">Find executables</button>
+            <label>Game executable relative to folder<input name="exe" list="transfer-exes" required placeholder="Example.exe"></label>
+            <datalist id="transfer-exes"></datalist>
+            <label>Link a save entry<select name="save_id" id="transfer-save"><option value="">None</option></select></label>
+            <p class="hint">Close the game first. SaveSync uploads newer saves from a linked entry to the shared save folder.</p>
+            <button type="submit" class="primary">Share game</button>
+          </form>
+        </div>
+      </section>
+      <section id="transfer-deck" class="confirm-content" hidden>
+        <form id="transfer-connect-form">
+          <label>PC connection code<input name="invite" autocomplete="off" required placeholder="Paste the code from the Windows app"></label>
+          <button type="submit" class="primary">Connect to PC</button>
+        </form>
+        <label>Install folder<input id="install-folder" placeholder="/home/deck/Games"></label>
+        <label class="inline-check"><input id="add-to-steam" type="checkbox" checked> Add to Steam with Proton Experimental</label>
+        <p class="hint">Automatic Steam registration uses the SaveSync Decky bridge. Keep the Windows app open during the download.</p>
+        <div id="transfer-catalog"></div>
+        <div id="transfer-installs"></div>
+      </section>
+    </div>
+  </dialog>
+</body>
+</html>

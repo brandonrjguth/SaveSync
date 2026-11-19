@@ -1,0 +1,10 @@
+{
+  "name": "SaveSync Bridge",
+  "author": "SaveSync",
+  "flags": [],
+  "api_version": 1,
+  "publish": {
+    "tags": ["utility"],
+    "description": "Adds games downloaded by SaveSync to Steam from Gaming Mode."
+  }
+}
