@@ -14,7 +14,8 @@ import urllib.request
 import zipfile
 from pathlib import Path, PurePosixPath
 
-from .snapshots import SaveError
+from .snapshots import SaveError, files_at, validate_names
+from .steam_shortcuts import steam_root
 from .window import clean_subprocess_env
 
 RELEASE_URL = "https://api.github.com/repos/mtkennerly/ludusavi/releases/latest"
@@ -127,6 +128,86 @@ def _savesync_prefixes():
     except OSError:
         pass
     return prefixes
+
+
+def _steam_prefixes():
+    root = steam_root()
+    if root is None:
+        return
+    libraries = {root.resolve()}
+    try:
+        config = (root / "steamapps/libraryfolders.vdf").read_text(encoding="utf-8-sig")
+        for value in re.findall(r'^\s*"path"\s*"((?:\\.|[^"\\])*)"', config, re.MULTILINE | re.IGNORECASE):
+            path = Path(re.sub(r'\\([\\"])', r'\1', value))
+            if path.is_absolute():
+                libraries.add(path.resolve())
+    except (OSError, ValueError):
+        pass
+    for library in sorted(libraries):
+        try:
+            for entry in (library / "steamapps/compatdata").iterdir():
+                if entry.name.isascii() and entry.name.isdecimal():
+                    yield entry / "pfx"
+        except OSError:
+            continue
+
+
+def _windows_relative(root, parts):
+    for part in parts:
+        exact = root / part
+        if exact.exists():
+            root = exact
+        else:
+            matches = [child for child in root.iterdir() if child.name.casefold() == part.casefold()]
+            if len(matches) != 1:
+                return None
+            root = matches[0]
+    return root.resolve()
+
+
+def observe_prefix_saves(relative, mode, prefix=""):
+    """Read save-file metadata across custom and Steam-managed Proton prefixes."""
+    validate_names([relative], "directory")
+    parts = PurePosixPath(relative).parts
+    if prefix:
+        path = Path(_strip_quotes(prefix)).expanduser()
+        if not path.is_absolute():
+            return []
+        prefixes = [path]
+    else:
+        prefixes = [*_savesync_prefixes(), *_steam_prefixes()]
+    matches = {}
+    for pfx in prefixes:
+        try:
+            users = list((pfx / "drive_c/users").iterdir())
+        except OSError:
+            continue
+        for user in users:
+            try:
+                if not user.is_dir():
+                    continue
+                candidate = _windows_relative(user, parts)
+                if candidate is None or str(candidate) in matches:
+                    continue
+                files = {}
+                for path in files_at(candidate, mode).values():
+                    info = path.stat()
+                    files[str(path)] = [info.st_mtime_ns, info.st_ctime_ns, info.st_size, info.st_ino]
+                if files:
+                    matches[str(candidate)] = files
+            except (OSError, SaveError, ValueError):
+                continue
+    return matches
+
+
+def find_prefix_saves(title, relative, mode, prefix=""):
+    matches = []
+    for location, files in observe_prefix_saves(relative, mode, prefix).items():
+        latest = max(files, key=lambda name: (files[name][0], name))
+        folder = location if mode == "directory" else str(Path(location).parent)
+        matches.append({"path": latest, "folder": folder, "modified": files[latest][0] // 1_000_000})
+    matches.sort(key=lambda match: (-match["modified"], match["path"]))
+    return [{"title": title, "files": matches}] if matches else []
 
 
 def _run_ludusavi(command, title="", prefix=""):

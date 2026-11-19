@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-from .discovery import find_ludusavi, install_ludusavi, scan_saves
+from .discovery import find_ludusavi, install_ludusavi
 from .game_transfers import GameTransfers
 from .library import Library, data_home
 from .snapshots import SaveError
@@ -108,15 +108,14 @@ class Handler(BaseHTTPRequestHandler):
                 return result
 
             actions = {
-                "/api/state": lambda: library.games(),
+                "/api/state": lambda: self.server.transfers.library_status(),
                 "/api/settings": lambda: library.settings(data),
                 "/api/map": map_and_share,
                 "/api/review": lambda: library.review(data["id"]),
                 "/api/sync": lambda: {"message": library.sync(data)},
                 "/api/recover": lambda: {"message": library.recover(data["id"])},
-                "/api/discover": lambda: {"results": scan_saves(
-                    library.state()["ludusavi"], data.get("title", "").strip(),
-                    data.get("prefix", "").strip(), data.get("install", "").strip())},
+                "/api/discover": lambda: {"results": self.server.transfers.discover_saves(data)},
+                "/api/detect_save": lambda: self.server.transfers.detect_save_location(data),
                 "/api/ludusavi": lambda: ludusavi_action(library, data),
             }
             if self.path == "/api/exit" and self.server.window_mode:

@@ -6,6 +6,7 @@ import os
 import threading
 from pathlib import Path
 
+from .discovery import find_prefix_saves, observe_prefix_saves, scan_saves
 from .library import checked_id, clean_path, overlap
 from .snapshots import SaveError, path_kind, validate_names, write_json
 from .steam_shortcuts import add_steam_shortcut, decky_bridge_installed
@@ -70,6 +71,85 @@ class GameTransfers:
     @property
     def receipts(self):
         return self.library.directory / "game-installs"
+
+    def prefix_hints(self):
+        if self.role != "deck":
+            return {}
+        hints = {}
+        for path in sorted(self.receipts.glob("*.json")):
+            try:
+                hint = json.loads(path.read_bytes()).get("save")
+                if isinstance(hint, dict) and hint.get("base") == "prefix" and hint.get("path"):
+                    validate_names([hint["path"]], "directory")
+                    hints[checked_id(hint["id"])] = hint["path"]
+            except (OSError, ValueError, KeyError, TypeError, SaveError):
+                continue
+        return hints
+
+    def library_status(self):
+        state = self.library.games()
+        hints = self.prefix_hints()
+        for game in state["games"]:
+            game["detecting"] = self.library.save_detection(game["id"]).is_file()
+            game["can_detect"] = game["id"] in hints
+        return state
+
+    def discover_saves(self, data):
+        state = self.library.state()
+        title, prefix, install = (data.get(key, "").strip() for key in ("title", "prefix", "install"))
+        game_id = data.get("id")
+        if self.role == "deck" and game_id:
+            game = state["maps"].get(checked_id(game_id))
+            relative = self.prefix_hints().get(game_id)
+            if game and relative:
+                matches = find_prefix_saves(game["title"], relative, game["mode"], prefix)
+                if matches:
+                    return matches
+        return scan_saves(state["ludusavi"], title, prefix, install)
+
+    def detect_save_location(self, data):
+        self.only("deck")
+        key = checked_id(data["id"])
+        action = data["action"]
+        session = self.library.save_detection(key)
+        if action == "cancel":
+            session.unlink(missing_ok=True)
+            return {"message": "Save location detection cancelled."}
+        if action not in ("start", "check"):
+            raise SaveError("Unknown save location detection action.")
+        game = next((entry for entry in self.library.games()["games"] if entry["id"] == key), None)
+        relative = self.prefix_hints().get(key)
+        if not game or not relative:
+            raise SaveError("SaveSync needs the Windows save path from the game transfer to detect this location.")
+        if self.library.pending(key).is_file():
+            raise SaveError("Recover the interrupted restore before detecting the save location.")
+
+        expected = {"path": game["path"], "mode": game["mode"], "relative": relative}
+        if action == "start" and session.is_file():
+            raise SaveError("Save location detection has already started.")
+        current = observe_prefix_saves(relative, game["mode"])
+        if action == "start":
+            write_json(session, {**expected, "observed": current})
+            return {"message": "Detection started."}
+        if not session.is_file():
+            raise SaveError("Start detection before making a test save.")
+        saved = json.loads(session.read_bytes())
+        if any(saved.get(field) != value for field, value in expected.items()):
+            raise SaveError("The save configuration changed. Cancel detection and start again.")
+        changed = []
+        for path, files in current.items():
+            before = saved["observed"].get(path, {})
+            if any(before.get(name) != stamp for name, stamp in files.items()):
+                changed.append(path)
+        if len(changed) > 1:
+            write_json(session, {**expected, "observed": current})
+            return {"message": "More than one save location changed. Make one more save from the shortcut you use, close the game, then check again."}
+        if not changed:
+            return {"message": "No new save was detected. Make a save in the game, close it, then check again."}
+
+        self.library.map_game({"id": key, "path": changed[0]})
+        session.unlink()
+        return {"message": "Detected and linked the active save location. Review the save status before syncing."}
 
     def status(self):
         result = {"role": self.role, "job": self.job.copy()}
@@ -396,6 +476,8 @@ class GameTransfers:
         try:
             ensured_id = self.library.ensure_game(record["title"], install=str(target), game_id=hint_id)
             key = checked_id(hint["id"]) if hint_id else ensured_id
+            if key and self.library.save_detection(key).is_file():
+                return "Finish detecting the active save location in Game library."
             games = self.library.games()["games"]
             game = next((entry for entry in games if entry["id"] == key), None)
             if game is None:

@@ -212,6 +212,9 @@ class Library:
     def pending(self, game_id):
         return self.directory / "recovery" / game_id / "pending.json"
 
+    def save_detection(self, game_id):
+        return self.directory / "save-detection" / (checked_id(game_id) + ".json")
+
     def inspect(self, state, game_id):
         game = state["maps"].get(checked_id(game_id))
         if game is None:
@@ -257,6 +260,8 @@ class Library:
     def sync(self, data):
         state = self.state()
         game_id = checked_id(data["id"])
+        if self.save_detection(game_id).is_file():
+            raise SaveError("Finish or cancel save location detection before syncing this game.")
         pending = self.pending(game_id)
         if pending.is_file():
             raise SaveError("Recover the interrupted restore first.")
@@ -313,7 +318,7 @@ class Library:
         """Publish any non-conflicting local save changes across mapped games into SaveSync-v1."""
         state = self.state()
         for key, mapping in list(state["maps"].items()):
-            if not mapping.get("path") or self.pending(key).is_file():
+            if not mapping.get("path") or self.pending(key).is_file() or self.save_detection(key).is_file():
                 continue
             try:
                 _, _, _, _, _, status, token = self.inspect(self.state(), key)
@@ -327,7 +332,7 @@ class Library:
         applied = 0
         state = self.state()
         for key, mapping in list(state["maps"].items()):
-            if not mapping.get("path") or self.pending(key).is_file():
+            if not mapping.get("path") or self.pending(key).is_file() or self.save_detection(key).is_file():
                 continue
             try:
                 _, _, _, _, _, status, token = self.inspect(self.state(), key)

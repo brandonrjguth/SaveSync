@@ -35,6 +35,8 @@ Use a dedicated folder whose relative filenames and folder layout match on both 
 
 ### Steam Deck and DRM-free games
 
+If a transferred Windows game uses a different Proton prefix from the one SaveSync selected, open its entry in **Game library** and choose **Detect active save location**. Launch the game from the Steam shortcut you normally use, make a test save, then close it. Return to SaveSync and select **Check for new save**. SaveSync updates the mapping when one matching location changes. Sync for that game pauses during detection. If the test save conflicts with the Windows snapshot, choose the Windows version in **Version history** to continue from your PC progress.
+
 Ludusavi checks Windows, native Linux, and Proton paths according to its scanner settings. Add any extra Steam libraries, GOG installs, or other launcher roots in [Ludusavi's roots settings](https://github.com/mtkennerly/ludusavi/blob/master/docs/help/roots.md). For a non-Steam shortcut or a DRM-free Wine install, open **Wine and Proton options** while finding saves and provide the prefix containing `drive_c`. A Steam Proton prefix is normally at `<Steam library>/steamapps/compatdata/<id>/pfx`. If the scan cannot identify a title's files, you can still map a known save location. Games with incompatible native Linux and Windows save formats need matching game versions or their own conversion step.
 
 If a title already uses Steam Cloud and you want SaveSync to manage its progress, turn Steam Cloud off for that title on each device after confirming the current copy you want. Other launcher cloud-sync features can also overwrite the same files.

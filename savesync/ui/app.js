@@ -150,21 +150,13 @@ function openMap(game, path = game?.path || "", mode = game?.mode || "auto", tit
   openDialog("map-dialog");
 }
 
-function suggestedPrefix(game) {
-  if (!game || !transferStatus?.installs) return "";
-  for (const install of transferStatus.installs) {
-    if (install.prefix && install.save_id === game.id) return install.prefix;
-  }
-  return "";
-}
-
 function openDiscovery(game) {
   scanTarget = game;
   const fields = $("discover-form").elements;
   fields.title.value = game?.title || "";
   fields.title.readOnly = Boolean(game);
   fields.install.value = game?.install || "";
-  fields.prefix.value = suggestedPrefix(game);
+  fields.prefix.value = "";
   $("scan-results").replaceChildren();
   openDialog("discover-dialog");
   if (game) $("discover-form").requestSubmit();
@@ -178,6 +170,20 @@ const statuses = {
   conflict: ["Different save versions found", "Choose the progress you want to continue. Shared versions stay in history, and overwritten local files get a recovery copy."],
   interrupted: ["Restore interrupted", "Recover the original local files before running another sync."],
 };
+
+async function runSaveDetection(game, action) {
+  if (busy) return;
+  busy = true;
+  try {
+    const result = await api("detect_save", { id: game.id, action });
+    notice(result.message);
+    await refresh(game.id);
+  } catch (error) {
+    notice(error.message, true);
+  } finally {
+    busy = false;
+  }
+}
 
 async function showGame() {
   const request = ++reviewRequest;
@@ -193,13 +199,25 @@ async function showGame() {
 
   const heading = element("div", "", "panel-header");
   const tools = element("div", "", "actions");
-  tools.append(button(game.path ? "Change location" : "Enter path", () => openMap(game)));
-  if (game.install && state.platform === "Windows") {
-    tools.append(button("Send to Steam Deck", () => openTransfer(game)));
+  if (!game.detecting) {
+    tools.append(button(game.path ? "Change location" : "Enter path", () => openMap(game)));
+    if (game.path) tools.append(button("Find local saves", () => openDiscovery(game)));
+    if (game.can_detect) tools.append(button("Detect active save location", () => runSaveDetection(game, "start")));
+    if (game.install && state.platform === "Windows") tools.append(button("Send to Steam Deck", () => openTransfer(game)));
   }
   heading.append(element("h2", game.title), tools);
   detail.append(heading);
   if (game.install) detail.append(element("p", "Game folder"), element("div", game.install, "location"));
+  if (game.detecting) {
+    const status = element("div", "", "status-box");
+    status.append(element("h3", "Waiting for a new save"),
+      element("p", "Launch the game from the Steam shortcut you use, make a save, then close the game. Return here and check for the save. Sync for this game is paused during detection."));
+    const actions = element("div", "", "actions");
+    actions.append(button("Check for new save", () => runSaveDetection(game, "check"), "primary"),
+      button("Cancel detection", () => runSaveDetection(game, "cancel")));
+    detail.append(status, actions);
+    return;
+  }
   if (!game.path) {
     detail.append(element("p", "Choose the " + (game.mode === "file" ? "save file" : "save folder") + " for this game on this device."),
       button("Find local saves", () => openDiscovery(game), "primary"));
@@ -308,7 +326,9 @@ function showScan(results) {
   const container = $("scan-results");
   container.replaceChildren();
   if (!results.length) {
-    container.append(element("p", "No existing save files found. Check Ludusavi’s roots or enter the location manually."));
+    container.append(element("p", "No existing save files found. Make a save in the game, close it, then try again. You can also enter the save path manually."));
+  } else if (scanTarget && state.platform === "Linux") {
+    container.append(element("p", "If more than one folder appears, make a new save from the Steam shortcut you use, then scan again and choose the folder containing that save."));
   }
   for (const result of results) {
     const card = element("section", "", "scan-game");
@@ -316,19 +336,23 @@ function showScan(results) {
     const titleMatches = state.games.filter((game) => game.title === result.title);
     const existing = scanTarget || (titleMatches.length === 1 ? titleMatches[0] : null);
     const folders = new Map();
-    for (const { path, folder } of result.files) {
-      const files = folders.get(folder) || [];
-      files.push(path);
-      folders.set(folder, files);
+    for (const { path, folder, modified } of result.files) {
+      const location = folders.get(folder) || { files: [], modified: null };
+      location.files.push(path);
+      if (modified != null) location.modified = Math.max(location.modified ?? modified, modified);
+      folders.set(folder, location);
     }
 
     const pick = (path, mode) => {
       $("discover-dialog").close();
       openMap(existing, path, mode, result.title);
     };
-    for (const [folder, files] of folders) {
+    for (const [folder, { files, modified }] of folders) {
       const group = element("div", "", "scan-file");
       group.append(element("div", folder, "location"));
+      if (modified != null) {
+        group.append(element("p", "Most recent file change · " + new Date(modified).toLocaleString(), "hint"));
+      }
       if (!existing || existing.mode === "directory") {
         group.append(button("Use this folder", () => pick(folder, "directory")));
       }
@@ -415,7 +439,7 @@ async function detectSaveLocation(form, data) {
     scan = await api("discover", {
       title: data.title,
       install: data.install || current?.install || "",
-      prefix: suggestedPrefix(current),
+      id: current?.id || "",
     });
   } catch (error) {
     const box = $("map-candidates");
@@ -460,9 +484,9 @@ async function saveMapLocation(data) {
 
 bindForm("map-form", (data) => saveMapLocation({ ...data }));
 bindForm("discover-form", async (data) => {
-  $("scan-results").replaceChildren(element("p", "Scanning with Ludusavi…"));
+  $("scan-results").replaceChildren(element("p", "Looking for save files…"));
   try {
-    const result = await api("discover", data);
+    const result = await api("discover", { ...data, id: scanTarget?.id || "" });
     showScan(result.results);
   } catch (error) {
     $("scan-results").replaceChildren();
