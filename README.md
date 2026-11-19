@@ -35,7 +35,7 @@ SaveSync opens in its own window using Chrome, Chromium, Edge, Brave, or Firefox
 ## Find and sync a game using a shared folder
 
 1. On the device with the progress you want, make a save in the game and close it. In SaveSync, select **Add game** and enter the title. On Windows, you can also enter the game's install folder to share it with your Steam Deck. Leave the save path blank to detect it with Ludusavi. If detection finds nothing, enter the path manually.
-2. Use **Upload saves**. On the other device, select **Refresh** in SaveSync once the shared folder has finished transferring. Select the existing library entry and choose **Set save location**. You can enter the destination path before the game creates a save.
+2. Use **Upload saves**. On the other device, select **Refresh** in SaveSync once the shared folder has finished transferring. Select the existing library entry and choose **Set save location**. Leave the path blank to detect existing saves, or enter a destination path before the game creates a save.
 3. Use **Download saves** before playing on the second device. After playing, close the game, select the refresh icon next to the title, and upload the new progress before moving between devices.
 4. If progress differs, pick this device's files or expand **Save history** to choose a shared version. If a local restore is interrupted, select **Recover original files** before syncing again.
 

@@ -5,6 +5,7 @@ const session = document.querySelector('meta[name="savesync-token"]').content;
 let state;
 let selected;
 let reviewRequest = 0;
+let mapSession = 0;
 let busy = false;
 let transferStatus = null;
 
@@ -165,16 +166,21 @@ function ludusaviInstallButton(onReady) {
 
 function openMap(game) {
   const form = $("map-form");
+  const hasLocation = Boolean(game?.path);
+  mapSession++;
   form.dataset.game = game?.id || "";
   const fields = form.elements;
   fields.title.value = game?.title || "";
   fields.install.value = game?.install || "";
   fields.install.closest("label").hidden = false;
   fields.path.value = game?.path || "";
-  fields.path.required = Boolean(game);
+  fields.path.required = hasLocation;
+  fields.path.placeholder = hasLocation
+    ? "Enter an absolute path"
+    : "Leave blank to detect automatically, or enter an absolute path";
   fields.prefix.value = "";
   $("map-proton").open = false;
-  $("map-proton").hidden = Boolean(game) || state?.platform !== "Linux";
+  $("map-proton").hidden = hasLocation || state?.platform !== "Linux";
   fields.mode.value = game?.mode || "auto";
   fields.title.readOnly = Boolean(game);
   $("map-candidates").replaceChildren();
@@ -546,26 +552,29 @@ function renderMapCandidates(candidates) {
   }
 }
 
-async function detectSaveLocation(form, data) {
+async function detectSaveLocation(form, data, id, isCurrent) {
   let scan;
   try {
     scan = await api("discover", {
       title: data.title,
       install: data.install || "",
       prefix: data.prefix || "",
+      id,
     });
   } catch (error) {
+    if (!isCurrent()) return;
     const box = $("map-candidates");
     box.replaceChildren(element("p", error.message));
     if (!state.ludusavi_ready) {
-      box.append(ludusaviInstallButton(async () => {
+      box.append(ludusaviInstallButton(() => {
+        if (!isCurrent()) return;
         box.replaceChildren(element("p", "Ludusavi installed. Detecting the save location…"));
-        await detectSaveLocation(form, data);
-        if (data.path.trim()) await saveMapLocation(data);
+        form.requestSubmit();
       }));
     }
     return;
   }
+  if (!isCurrent()) return;
   const candidates = discoveryCandidates(scan.results, data.mode);
   const exact = candidates.length === 1
     && candidates[0].title.toLowerCase() === data.title.trim().toLowerCase();
@@ -582,16 +591,17 @@ async function detectSaveLocation(form, data) {
 
 async function saveMapLocation(data) {
   const form = $("map-form");
-  if (!form.dataset.game && !data.path.trim()) {
-    await detectSaveLocation(form, data);
-    if (!data.path.trim()) {
-      formError(form, "A save location is needed. Pick a detected one, enter the path, or cancel.");
-      return;
-    }
+  const dialog = $("map-dialog");
+  const id = form.dataset.game;
+  const session = mapSession;
+  const isCurrent = () => dialog.open && session === mapSession;
+  if (!data.path.trim() && !form.elements.path.required) {
+    await detectSaveLocation(form, data, id, isCurrent);
+    if (!isCurrent() || !data.path.trim()) return;
   }
-  const result = await api("map", { ...data, id: form.dataset.game });
-  $("map-dialog").close();
-  notice(form.dataset.game ? "Save location configured." : "Game added.");
+  const result = await api("map", { ...data, id });
+  if (isCurrent()) dialog.close();
+  notice(id ? "Save location configured." : "Game added.");
   await refresh(result.id);
 }
 
