@@ -6,6 +6,8 @@ let transferTimer;
 let transferCatalog = [];
 let transferInvite = "";
 let transferInFlight = false;
+const exeChoices = {};
+const exeSelected = {};
 
 function formatBytes(bytes) {
   if (!bytes) return "0 B";
@@ -35,8 +37,17 @@ async function transferAction(action, data = {}) {
       replaceOptions($("transfer-exes"), result.executables.map((path) => [path, path]));
       if (result.executables.length === 1) $("share-form").elements.exe.value = result.executables[0];
       transferMessage(result.executables.length + " executables found.");
+    } else if (action === "exes") {
+      exeChoices[data.id] = result.executables;
+      renderTransfer(await transferCall("status"));
+      if (!result.executables.length) {
+        transferMessage("No Windows executables were found in the downloaded game folder.", true);
+      }
     } else {
       renderTransfer(result);
+      if (action === "finish" && data.exe) {
+        transferMessage("Executable chosen. The Steam shortcut is queued.");
+      }
     }
   } catch (error) {
     transferMessage(error.message, true);
@@ -86,15 +97,44 @@ function renderInstalls(installs) {
         added: "Added to Steam",
         error: "Steam shortcut needs attention in the SaveSync Decky panel",
       };
-      label.append(element("small", shortcuts[game.shortcut] || "Steam setup pending"));
+      if (game.needs_exe) {
+        label.append(element("small", "Choose the game’s executable to add it to Steam"));
+      } else {
+        label.append(element("small", shortcuts[game.shortcut] || "Steam setup pending"));
+      }
     }
     if (game.save_message) label.append(element("small", game.save_message));
-    row.append(label, button("Retry setup", () => transferAction("finish", { id: game.id })));
+    row.append(label);
+
+    const controls = element("div", "", "actions");
+    if (game.steam && !game.shortcut) {
+      const choices = exeChoices[game.id] || [];
+      if (choices.length) {
+        const select = document.createElement("select");
+        for (const exe of choices) {
+          const option = element("option", exe);
+          option.value = exe;
+          select.append(option);
+        }
+        select.value = choices.includes(exeSelected[game.id]) ? exeSelected[game.id] : choices[0];
+        select.addEventListener("change", () => { exeSelected[game.id] = select.value; });
+        controls.append(select);
+        controls.append(button("Add to Steam", () => transferAction("finish", {
+          id: game.id, exe: select.value,
+        }), "primary"));
+      } else {
+        controls.append(button(game.exe ? "Change executable" : "Choose executable",
+          () => transferAction("exes", { id: game.id })));
+      }
+    }
+    controls.append(button("Retry setup", () => transferAction("finish", { id: game.id })));
+    row.append(controls);
     container.append(row);
   }
 }
 
 function renderTransfer(transfer) {
+  transferStatus = transfer;
   $("transfer-host").hidden = transfer.role !== "host";
   $("transfer-deck").hidden = transfer.role !== "deck";
   const job = transfer.job;
@@ -155,16 +195,24 @@ async function tickTransfers() {
   }
 }
 
-$("transfer-button").addEventListener("click", () => {
+function openTransfer(game = null) {
   transferMessage("");
   if (state) {
-    const entries = state.games.filter((game) => game.path).map((game) => [game.id, game.title]);
+    const entries = state.games.filter((item) => item.path).map((item) => [item.id, item.title]);
     replaceOptions($("transfer-save"), [["", "None"], ...entries]);
+    if (game) {
+      const share = $("share-form").elements;
+      share.title.value = game.title || "";
+      share.folder.value = game.install || "";
+      if (game.path) $("transfer-save").value = game.id;
+    }
   }
   transferDialog.showModal();
   tickTransfers();
   transferTimer = setInterval(tickTransfers, 1000);
-});
+}
+
+$("transfer-button").addEventListener("click", () => openTransfer());
 
 transferDialog.addEventListener("close", () => {
   clearInterval(transferTimer);
@@ -195,5 +243,6 @@ $("transfer-copy").addEventListener("click", async () => {
   }
 });
 transferCall("status").then((transfer) => {
+  transferStatus = transfer;
   $("transfer-button").hidden = !transfer.role;
 }).catch((error) => notice(error.message, true));

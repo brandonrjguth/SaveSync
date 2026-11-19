@@ -89,7 +89,7 @@ def safe_file(root, name):
 def manifest_for(root, title, executable, hint):
     sources, empty_dirs = game_files(root)
     executable = executable.replace("\\", "/")
-    if executable not in sources or Path(executable).suffix.lower() != ".exe":
+    if executable and (executable not in sources or Path(executable).suffix.lower() != ".exe"):
         raise SaveError("Choose the Windows .exe inside the game folder.")
     if not title or len(title) > 160 or any(ord(char) < 32 for char in title):
         raise SaveError("Enter a game title of up to 160 characters.")
@@ -342,7 +342,7 @@ def check_manifest(manifest, game_id):
             or len(files) + len(directories) > MAX_FILES
             or any(not isinstance(directory, str) for directory in directories)
             or not files.keys().isdisjoint(directories) or len(set(directories)) != len(directories)
-            or executable not in files or Path(executable).suffix.lower() != ".exe"):
+            or (executable and (executable not in files or Path(executable).suffix.lower() != ".exe"))):
         raise SaveError("The PC returned an invalid game manifest.")
     validate_names([*files, *directories], "directory")
     for item in files.values():

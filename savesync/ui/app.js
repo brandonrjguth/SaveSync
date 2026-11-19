@@ -7,6 +7,7 @@ let selected;
 let scanTarget;
 let reviewRequest = 0;
 let busy = false;
+let transferStatus = null;
 
 function element(tag, text, className) {
   const node = document.createElement(tag);
@@ -104,10 +105,36 @@ function renderLibrary() {
 function openSettings() {
   const fields = $("settings-form").elements;
   for (const key of ["device", "shared", "ludusavi"]) fields[key].value = state[key];
+  const tools = $("settings-ludusavi");
+  tools.replaceChildren();
+  if (!state.ludusavi_ready) {
+    tools.append(ludusaviInstallButton(() => {
+      fields.ludusavi.value = state.ludusavi;
+      tools.replaceChildren(element("span", "Ludusavi installed. Detection is ready.", "hint"));
+    }));
+  }
   openDialog("settings-dialog");
 }
 
-function openMap(game, path = game?.path || "", mode = game?.mode || "directory", title = game?.title || "") {
+function ludusaviInstallButton(onReady) {
+  const node = button("Download Ludusavi", async () => {
+    node.disabled = true;
+    node.textContent = "Downloading Ludusavi…";
+    try {
+      const result = await api("ludusavi", { action: "install" });
+      state.ludusavi = result.path;
+      state.ludusavi_ready = true;
+      onReady(result);
+    } catch (error) {
+      node.disabled = false;
+      node.textContent = "Download Ludusavi";
+      notice(error.message, true);
+    }
+  }, "primary");
+  return node;
+}
+
+function openMap(game, path = game?.path || "", mode = game?.mode || "auto", title = game?.title || "") {
   if (!state.shared) {
     openSettings();
     formError($("settings-form"), "Set the shared folder before adding a game.");
@@ -117,20 +144,34 @@ function openMap(game, path = game?.path || "", mode = game?.mode || "directory"
   form.dataset.game = game?.id || "";
   const fields = form.elements;
   fields.title.value = title;
-  fields.mode.value = mode;
+  fields.install.value = game?.install || "";
+  fields.install.closest("label").hidden = state.platform !== "Windows";
   fields.path.value = path;
+  fields.mode.value = mode;
   fields.title.readOnly = Boolean(game);
-  fields.mode.disabled = Boolean(game);
+  $("map-candidates").replaceChildren();
   $("map-heading").textContent = game ? "Set local save location" : "Add game";
+  form.querySelector('[type="submit"]').textContent = game ? "Save location" : "Add game";
   openDialog("map-dialog");
+}
+
+function suggestedPrefix(game) {
+  if (!game || !transferStatus?.installs) return "";
+  for (const install of transferStatus.installs) {
+    if (install.prefix && install.save_id === game.id) return install.prefix;
+  }
+  return "";
 }
 
 function openDiscovery(game) {
   scanTarget = game;
-  $("discover-form").elements.title.value = game?.title || "";
-  $("discover-form").elements.title.readOnly = Boolean(game);
+  const fields = $("discover-form").elements;
+  fields.title.value = game?.title || "";
+  fields.title.readOnly = Boolean(game);
+  fields.prefix.value = suggestedPrefix(game);
   $("scan-results").replaceChildren();
   openDialog("discover-dialog");
+  if (game) $("discover-form").requestSubmit();
 }
 
 const statuses = {
@@ -149,15 +190,20 @@ async function showGame() {
   detail.replaceChildren();
   if (!game) {
     detail.append(element("h2", "Add your first game"),
-      element("p", "Use Find saves to detect existing files, or add a game with a known save path."));
+      element("p", "Add a game with its title and, optionally, its install folder. SaveSync detects the save location automatically and can transfer the game to a Steam Deck."));
     if (!state.shared) detail.append(button("Connect a shared folder", openSettings, "primary"));
     return;
   }
 
   const heading = element("div", "", "panel-header");
-  heading.append(element("h2", game.title),
-    button(game.path ? "Change location" : "Enter path", () => openMap(game)));
+  const tools = element("div", "", "actions");
+  tools.append(button(game.path ? "Change location" : "Enter path", () => openMap(game)));
+  if (game.install && state.platform === "Windows") {
+    tools.append(button("Send to Steam Deck", () => openTransfer(game)));
+  }
+  heading.append(element("h2", game.title), tools);
   detail.append(heading);
+  if (game.install) detail.append(element("p", "Game folder"), element("div", game.install, "location"));
   if (!game.path) {
     detail.append(element("p", "Choose the " + (game.mode === "file" ? "save file" : "save folder") + " for this game on this device."),
       button("Find local saves", () => openDiscovery(game), "primary"));
@@ -165,7 +211,7 @@ async function showGame() {
   }
 
   const checking = element("p", "Checking save files…");
-  detail.append(element("div", game.path, "location"), checking);
+  detail.append(element("p", "Save location"), element("div", game.path, "location"), checking);
   try {
     const review = await api("review", { id: game.id });
     if (request !== reviewRequest) return;
@@ -334,12 +380,84 @@ bindForm("settings-form", async (data) => {
   notice("Settings saved.");
   await refresh();
 });
-bindForm("map-form", async (data) => {
-  const result = await api("map", { ...data, id: $("map-form").dataset.game });
+
+function discoveryCandidates(results, mode) {
+  const folders = new Map();
+  const files = new Map();
+  for (const result of results) {
+    for (const entry of result.files) {
+      if (mode !== "file" && !folders.has(entry.folder)) folders.set(entry.folder, result.title);
+      if (mode !== "directory" && !files.has(entry.path)) files.set(entry.path, result.title);
+    }
+  }
+  return [...folders].map(([path, title]) => ({ title, path, kind: "directory" }))
+    .concat([...files].map(([path, title]) => ({ title, path, kind: "file" })));
+}
+
+function renderMapCandidates(candidates) {
+  const box = $("map-candidates");
+  box.replaceChildren();
+  const singleTitle = candidates.every((candidate) => candidate.title === candidates[0].title);
+  for (const candidate of candidates) {
+    const row = element("div", "", "scan-file");
+    row.append(element("div", (singleTitle ? "" : candidate.title + " · ") + candidate.path, "location"));
+    const use = () => {
+      const fields = $("map-form").elements;
+      fields.path.value = candidate.path;
+      fields.mode.value = candidate.kind;
+      box.replaceChildren();
+    };
+    row.append(button(candidate.kind === "file" ? "Use this file" : "Use this folder", use));
+    box.append(row);
+  }
+}
+
+async function detectSaveLocation(form, data) {
+  let scan;
+  try {
+    scan = await api("discover", { title: data.title });
+  } catch (error) {
+    const box = $("map-candidates");
+    box.replaceChildren(element("p", error.message));
+    if (!state.ludusavi_ready) {
+      box.append(ludusaviInstallButton(async () => {
+        box.replaceChildren(element("p", "Ludusavi installed. Detecting the save location…"));
+        await detectSaveLocation(form, data);
+        if (data.path.trim()) await saveMapLocation(data);
+      }));
+    }
+    return;
+  }
+  const candidates = discoveryCandidates(scan.results, data.mode);
+  const exact = candidates.length === 1
+    && candidates[0].title.toLowerCase() === data.title.trim().toLowerCase();
+  if (exact) {
+    data.path = candidates[0].path;
+    data.mode = candidates[0].kind;
+    return;
+  }
+  renderMapCandidates(candidates.slice(0, 30));
+  formError(form, candidates.length
+    ? "Choose one of the detected save locations, or enter the path manually."
+    : "No existing saves were detected for this title. Enter the save location manually.");
+}
+
+async function saveMapLocation(data) {
+  const form = $("map-form");
+  if (!data.path.trim()) {
+    await detectSaveLocation(form, data);
+    if (!data.path.trim()) {
+      formError(form, "A save location is needed. Pick a detected one, enter the path, or cancel.");
+      return;
+    }
+  }
+  const result = await api("map", { ...data, id: form.dataset.game });
   $("map-dialog").close();
-  notice("Save location configured.");
+  notice(form.dataset.game ? "Save location configured." : "Game added.");
   await refresh(result.id);
-});
+}
+
+bindForm("map-form", (data) => saveMapLocation({ ...data }));
 bindForm("discover-form", async (data) => {
   $("scan-results").replaceChildren(element("p", "Scanning with Ludusavi…"));
   try {
@@ -347,6 +465,11 @@ bindForm("discover-form", async (data) => {
     showScan(result.results);
   } catch (error) {
     $("scan-results").replaceChildren();
+    if (!state.ludusavi_ready) {
+      $("scan-results").append(element("p", error.message));
+      $("scan-results").append(ludusaviInstallButton(() => $("discover-form").requestSubmit()));
+      return;
+    }
     throw error;
   }
 });

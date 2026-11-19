@@ -52,7 +52,8 @@
       <label>Shared folder<input name="shared" placeholder="Enter the local path to a shared or mirrored folder"></label>
       <p class="hint">Point each device to the same folder or to its local copy. Make snapshot files available offline if your provider supports it.</p>
       <label>Ludusavi executable<input name="ludusavi" placeholder="Leave blank to use Ludusavi from PATH"></label>
-      <p class="hint">Required for discovery. Manual save locations work without Ludusavi.</p>
+      <div id="settings-ludusavi" class="actions"></div>
+      <p class="hint">Ludusavi detects save locations automatically. SaveSync can download it for you, or point this field at a copy you already have.</p>
       <p class="form-error" role="alert" hidden></p>
       <footer><button type="button" data-close>Cancel</button><button class="primary" type="submit">Save settings</button></footer>
     </form>
@@ -61,11 +62,13 @@
     <form id="map-form">
       <div class="dialog-heading"><h2 id="map-heading">Add game</h2><button type="button" data-close aria-label="Close">×</button></div>
       <label>Game title<input name="title" required maxlength="160"></label>
-      <label>Location type<select name="mode"><option value="directory">Save folder</option><option value="file">Single save file</option></select></label>
-      <label>Local path<input name="path" required placeholder="Enter an absolute path"></label>
-      <p class="hint">For a folder, use a dedicated save directory. Sync applies the full set of files in it, including deletions.</p>
+      <label>Game install folder<input name="install" placeholder="Optional — e.g. D:\Games\Example — used to transfer the game to a Steam Deck"></label>
+      <label>Save location<input name="path" placeholder="Leave blank to detect automatically, or enter an absolute path"></label>
+      <input type="hidden" name="mode" value="auto">
+      <div id="map-candidates" aria-live="polite"></div>
+      <p class="hint">The save location is detected from the title when Ludusavi is available. A dedicated save folder is recommended; sync applies all files in it, including deletions.</p>
       <p class="form-error" role="alert" hidden></p>
-      <footer><button type="button" data-close>Cancel</button><button type="submit" class="primary">Save location</button></footer>
+      <footer><button type="button" data-close>Cancel</button><button type="submit" class="primary">Add game</button></footer>
     </form>
   </dialog>
   <dialog id="discover-dialog">
@@ -107,10 +110,10 @@
             <label>Game title<input name="title" maxlength="160" required></label>
             <label>Windows game folder<input name="folder" required placeholder="D:\Games\Example"></label>
             <button type="button" id="transfer-scan">Find executables</button>
-            <label>Game executable relative to folder<input name="exe" list="transfer-exes" required placeholder="Example.exe"></label>
+            <label>Game executable relative to folder<input name="exe" list="transfer-exes" placeholder="Optional — choose on the Deck after download"></label>
             <datalist id="transfer-exes"></datalist>
             <label>Link a save entry<select name="save_id" id="transfer-save"><option value="">None</option></select></label>
-            <p class="hint">Close the game first. SaveSync uploads newer saves from a linked entry to the shared save folder.</p>
+            <p class="hint">Close the game first. SaveSync uploads newer saves from a linked entry to the shared save folder. Leave the executable blank to pick it on the Deck.</p>
             <button type="submit" class="primary">Share game</button>
           </form>
         </div>

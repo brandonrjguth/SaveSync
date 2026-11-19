@@ -63,9 +63,17 @@ class GameTransfers:
                 record = json.loads(path.read_bytes())
                 if not Path(record["target"]).is_dir():
                     continue
-                item = {key: record[key] for key in ("id", "title", "target", "steam", "save_message")}
+                item = {"id": record["id"], "title": record["title"], "target": record["target"],
+                        "steam": record["steam"], "save_message": record.get("save_message", ""),
+                        "exe": record.get("exe", "")}
+                item["needs_exe"] = bool(item["steam"]) and not item["exe"]
                 file = queue_dir() / (record["id"] + ".json")
                 item["shortcut"] = json.loads(file.read_bytes()).get("status", "pending") if file.is_file() else ""
+                hint = record.get("save")
+                item["save_id"] = hint.get("id", "") if isinstance(hint, dict) else ""
+                prefix = Path.home() / ".local/share/savesync-prefixes" / record["id"] / "pfx"
+                if isinstance(hint, dict) and hint.get("base") == "prefix" and (prefix / "drive_c").is_dir():
+                    item["prefix"] = str(prefix)
                 result["installs"].append(item)
         return result
 
@@ -96,10 +104,15 @@ class GameTransfers:
             self.share(data)
         elif action == "connect":
             return {"games": catalog(data["invite"])}
+        elif action == "exes":
+            return {"executables": self.list_executables(checked_id(data["id"]))}
         elif action == "download":
             self.fetch(data)
         elif action == "finish":
-            self.finish(checked_id(data["id"]))
+            exe = data.get("exe", "")
+            if not isinstance(exe, str):
+                raise SaveError("Invalid executable choice.")
+            self.finish(checked_id(data["id"]), exe.strip())
         else:
             raise SaveError("Unknown transfer action.")
         return self.status()
@@ -172,26 +185,41 @@ class GameTransfers:
             write_json(receipt, record)
 
         def install():
-            download(invite, key, parent, report, record_install)
-            return {"message": "Game downloaded.", "installed": key}
+            manifest, _ = download(invite, key, parent, report, record_install)
+            message = "Game downloaded."
+            if steam and not manifest["exe"]:
+                message = "Game downloaded. Choose its executable below to add it to Steam."
+            return {"message": message, "installed": key}
 
         self.start_job("Downloading game", install)
 
-    def finish(self, key):
+    def list_executables(self, key):
+        receipt = self.receipts / (key + ".json")
+        if not receipt.is_file():
+            raise SaveError("The game has not been downloaded.")
+        target = Path(json.loads(receipt.read_bytes())["target"])
+        sources, _ = game_files(target)
+        return [name for name in sorted(sources) if Path(name).suffix.lower() == ".exe"][:300]
+
+    def finish(self, key, exe=""):
         receipt = self.receipts / (key + ".json")
         if not receipt.is_file():
             raise SaveError("The game has not been downloaded.")
         record = json.loads(receipt.read_bytes())
         target = Path(record["target"])
-        executable = target / record["exe"]
-        if path_kind(executable) != "file":
+        if exe:
+            if "\\" in exe or exe.startswith("/") or ".." in exe.split("/") or Path(exe).suffix.lower() != ".exe":
+                raise SaveError("Choose a Windows .exe inside the game folder.")
+            record["exe"] = exe
+        executable = target / record["exe"] if record["exe"] else None
+        if executable is not None and path_kind(executable) != "file":
             raise SaveError("The downloaded executable is missing.")
         prefix = Path.home() / ".local/share/savesync-prefixes" / key
 
         # Set up the save location before making the shortcut visible to Steam.
         record["save_message"] = self.link_saves(record, target, prefix)
         write_json(receipt, record)
-        if record["steam"]:
+        if record["steam"] and executable is not None:
             shortcut = queue_dir() / (key + ".json")
             if not shortcut.exists():
                 if any(char in str(executable) for char in ('"', chr(36), chr(96), "\r", "\n")):

@@ -8,9 +8,10 @@ import tempfile
 import uuid
 from pathlib import Path
 
+from .discovery import find_ludusavi
 from .snapshots import (
-    ID, SaveError, apply_files, files_at, fingerprint, history, metadata, read_snapshot, replace_saves,
-    scan, stage_snapshot, write_json, write_snapshot,
+    ID, SaveError, apply_files, files_at, fingerprint, history, metadata, path_kind, read_snapshot,
+    replace_saves, scan, stage_snapshot, write_json, write_snapshot,
 )
 
 
@@ -88,8 +89,10 @@ class Library:
         for key, mapping in state["maps"].items():
             games.setdefault(key, {"id": key, "title": mapping["title"], "mode": mapping["mode"]})
         return {"device": state["device"], "platform": state["platform"], "shared": state["shared"],
-                "ludusavi": state["ludusavi"], "warning": warning,
-                "games": [dict(info, path=state["maps"].get(key, {}).get("path", ""))
+                "ludusavi": state["ludusavi"], "ludusavi_ready": find_ludusavi(state["ludusavi"]) is not None,
+                "warning": warning,
+                "games": [dict(info, path=state["maps"].get(key, {}).get("path", ""),
+                               install=state["maps"].get(key, {}).get("install", ""))
                           for key, info in sorted(games.items(), key=lambda item: item[1]["title"].casefold())]}
 
     def map_game(self, data):
@@ -105,8 +108,8 @@ class Library:
             title = data["title"].strip()
             if not title or len(title) > 160:
                 raise SaveError("Enter a title up to 160 characters.")
-            mode = data["mode"]
-            if mode not in ("file", "directory"):
+            mode = data.get("mode", "auto")
+            if mode not in ("file", "directory", "auto"):
                 raise SaveError("Choose a file or folder.")
             game = {"id": uuid.uuid4().hex, "title": title, "mode": mode}
             game_dir = store / game["id"]
@@ -121,13 +124,33 @@ class Library:
         previous = state["maps"].get(game["id"])
         if previous and self.pending(game["id"]).exists():
             raise SaveError("Recover the interrupted restore before changing the save location.")
+        if game["mode"] == "auto":
+            game["mode"] = "file" if path_kind(path) == "file" else "directory"
+        install = data.get("install", "")
+        if not isinstance(install, str):
+            raise SaveError("Invalid game folder.")
+        install = install.strip()
+        if install:
+            install_path = clean_path(install)
+            if path_kind(install_path) != "directory":
+                raise SaveError("The game folder must be an existing directory.")
+            install = str(install_path)
         files_at(path, game["mode"])
         if not game_id:
             write_json(game_dir / "game.json", game)
-        state["maps"][game["id"]] = (previous if previous and previous["path"] == str(path)
-                                     else dict(game, path=str(path)))
+        entry = previous if previous and previous["path"] == str(path) else dict(game, path=str(path))
+        if install:
+            entry["install"] = install
+        else:
+            entry.pop("install", None)
+        state["maps"][game["id"]] = entry
         write_json(self.config, state)
         return {"id": game["id"]}
+
+    def set_ludusavi(self, path):
+        state = self.state()
+        state["ludusavi"] = str(path)
+        write_json(self.config, state)
 
     def pending(self, game_id):
         return self.directory / "recovery" / game_id / "pending.json"

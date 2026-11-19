@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-from .discovery import scan_saves
+from .discovery import find_ludusavi, install_ludusavi, scan_saves
 from .game_transfers import GameTransfers
 from .library import Library, data_home
 from .snapshots import SaveError
@@ -110,6 +110,7 @@ class Handler(BaseHTTPRequestHandler):
                 "/api/recover": lambda: {"message": library.recover(data["id"])},
                 "/api/discover": lambda: {"results": scan_saves(
                     library.state()["ludusavi"], data.get("title", "").strip(), data.get("prefix", "").strip())},
+                "/api/ludusavi": lambda: ludusavi_action(library, data),
             }
             if self.path == "/api/exit" and self.server.window_mode:
                 self.json_reply(200, {})
@@ -132,6 +133,19 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         pass
+
+
+def ludusavi_action(library, data):
+    action = data.get("action", "status")
+    current = find_ludusavi(library.state()["ludusavi"])
+    if action == "status":
+        return {"ready": current is not None, "path": str(current) if current else ""}
+    if action == "install":
+        if current is None:
+            current = install_ludusavi(library.directory)
+            library.set_ludusavi(str(current))
+        return {"path": str(current)}
+    raise SaveError("Unknown Ludusavi action.")
 
 
 def main(window_default=False):
