@@ -100,7 +100,12 @@
           <button type="submit" class="primary">Start sharing</button>
         </form>
         <div id="transfer-offer" class="confirm-content" hidden>
-          <label>Connection code<input id="transfer-code" readonly></label>
+          <div class="pair-card">
+            <span class="pair-label">Pairing code — enter this on your Steam Deck</span>
+            <output id="transfer-code" class="pair-code"></output>
+            <small id="transfer-host-address" class="hint"></small>
+          </div>
+          <p id="transfer-locked" class="form-error" role="alert" hidden>Too many incorrect codes. End this session and start a new one to get a fresh code.</p>
           <div class="actions">
             <button type="button" id="transfer-copy">Copy code</button>
             <button type="button" id="transfer-stop">End session</button>
@@ -119,8 +124,17 @@
         </div>
       </section>
       <section id="transfer-deck" class="confirm-content" hidden>
+        <div class="panel-header">
+          <div id="transfer-discovered" class="hint">Searching for a sharing PC on this network…</div>
+          <button type="button" id="transfer-discover">Find PC</button>
+        </div>
         <form id="transfer-connect-form">
-          <label>PC connection code<input name="invite" autocomplete="off" required placeholder="Paste the code from the Windows app"></label>
+          <label id="transfer-host-picker-label" hidden>PC on this network<select id="transfer-host-picker"></select></label>
+          <label>Pairing code<input id="transfer-code-input" name="code" class="pair-input" autocomplete="off" autocapitalize="characters" spellcheck="false" required placeholder="K7M-4P9"></label>
+          <details id="transfer-manual-details">
+            <summary>Can’t find your PC? Enter IP manually</summary>
+            <label>PC IP address<input id="transfer-manual-address" name="address" placeholder="192.168.1.25"></label>
+          </details>
           <button type="submit" class="primary">Connect to PC</button>
         </form>
         <label>Install folder<input id="install-folder" placeholder="/home/deck/Games"></label>

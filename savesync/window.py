@@ -1,13 +1,61 @@
-"""Open a dedicated SaveSync window using an isolated Chromium profile."""
+"""Open the SaveSync window in a native view, with a browser fallback."""
 
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 from .snapshots import SaveError
+
+
+def run_window(server, url, log):
+    if webview_window(server, url, log):
+        return
+    browser_window(server, url, log)
+
+
+def webview_window(server, url, log):
+    try:
+        import webview
+    except ImportError:
+        return False
+    window = webview.create_window("SaveSync", url, width=1180, height=780,
+                                   min_size=(760, 500), background_color="#111420")
+
+    def close_window():
+        try:
+            window.destroy()
+        except Exception:
+            pass
+
+    server.close_window = close_window
+    window.events.closed += [lambda: setattr(server, "exit_requested", True)]
+
+    def pump():
+        try:
+            server.serve_forever()
+        except Exception as error:
+            print(f"SaveSync server error: {error}", file=log, flush=True)
+            close_window()
+
+    threading.Thread(target=pump, name="SaveSync server", daemon=True).start()
+    try:
+        webview.start()
+    except Exception as error:
+        print(f"SaveSync native window failed, falling back to a browser window: {error}",
+              file=log, flush=True)
+        server.exit_requested = True
+        server.shutdown()
+        server.exit_requested = False
+        server.close_window = None
+        return False
+    server.exit_requested = True
+    server.close_window = None
+    server.shutdown()
+    return True
 
 
 def browser_command():
@@ -20,34 +68,50 @@ def browser_command():
             for root in ("ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA"):
                 base = os.environ.get(root)
                 if base and (path := Path(base) / executable).is_file():
-                    return [str(path)], None
+                    return [str(path)], None, "chromium"
         raise SaveError("Install Microsoft Edge or Google Chrome to open the SaveSync window.")
 
     flatpak = shutil.which("flatpak")
     if flatpak:
-        for app in ("com.google.Chrome", "org.chromium.Chromium"):
+        for app, kind in (
+            ("com.google.Chrome", "chromium"),
+            ("org.chromium.Chromium", "chromium"),
+            ("com.microsoft.Edge", "chromium"),
+            ("com.brave.Browser", "chromium"),
+            ("org.mozilla.firefox", "firefox"),
+        ):
             if subprocess.run([flatpak, "info", app], stdout=subprocess.DEVNULL,
                               stderr=subprocess.DEVNULL, check=False).returncode == 0:
                 cache = Path.home() / ".var/app" / app / "cache"
                 cache.mkdir(parents=True, exist_ok=True)
-                return [flatpak, "run", app], cache
-    for executable in ("chromium", "chromium-browser", "google-chrome"):
+                return [flatpak, "run", app], cache, kind
+    for executable, kind in (
+        ("chromium", "chromium"),
+        ("chromium-browser", "chromium"),
+        ("google-chrome", "chromium"),
+        ("microsoft-edge", "chromium"),
+        ("brave-browser", "chromium"),
+        ("firefox", "firefox"),
+    ):
         if path := shutil.which(executable):
-            return [path], None
-    raise SaveError("Install Google Chrome or Chromium from Discover, then reopen SaveSync.")
+            return [path], None, kind
+    raise SaveError("Install Google Chrome, Chromium, or Firefox from Discover, then reopen SaveSync.")
 
 
-def run_window(server, url, log):
-    command, cache = browser_command()
+def browser_window(server, url, log):
+    command, cache, kind = browser_command()
     server.timeout = 0.25
     with tempfile.TemporaryDirectory(prefix="savesync-window-", dir=cache, ignore_cleanup_errors=True) as profile:
-        args = [
-            *command, "--app=" + url, "--user-data-dir=" + profile,
-            "--no-first-run", "--no-default-browser-check", "--disable-background-mode",
-            "--disable-background-networking", "--start-maximized",
-        ]
-        if os.name != "nt" and os.environ.get("DISPLAY"):
-            args.append("--ozone-platform=x11")
+        if kind == "firefox":
+            args = [*command, "--new-window", "--no-remote", "--profile", profile, url]
+        else:
+            args = [
+                *command, "--app=" + url, "--user-data-dir=" + profile,
+                "--no-first-run", "--no-default-browser-check", "--disable-background-mode",
+                "--disable-background-networking", "--start-maximized",
+            ]
+            if os.name != "nt" and os.environ.get("DISPLAY"):
+                args.append("--ozone-platform=x11")
         with subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=log, stderr=log) as window:
             try:
                 while not server.exit_requested and window.poll() is None:

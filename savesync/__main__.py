@@ -115,6 +115,9 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/exit" and self.server.window_mode:
                 self.json_reply(200, {})
                 self.server.exit_requested = True
+                close = getattr(self.server, "close_window", None)
+                if close is not None:
+                    close()
                 return
             if self.path.startswith("/api/transfer/"):
                 self.json_reply(200, self.server.transfers.action(self.path.removeprefix("/api/transfer/"), data))

@@ -2,22 +2,22 @@
 
 SaveSync moves PC game saves between Windows, Steam Deck and an Android staging folder. It keeps previous versions and pauses when it finds competing changes. Games can come from Steam, GOG, other launchers or a standalone install.
 
-## Open on Windows
+## Install on Windows
 
-Double-click `SaveSync.exe` on 64-bit Windows. It opens a dedicated window using Microsoft Edge or Google Chrome, whichever is installed. The Windows build includes Python. You can pin SaveSync to the taskbar or make a desktop shortcut.
+Download `SaveSync-Setup.exe` from the [GitHub Releases](https://github.com/brandonrjguth/SaveSync/releases) page and run it. No Python installation or administrator privileges are required — everything is bundled. It adds **SaveSync** to your Start Menu (and optionally your Desktop) and opens a dedicated window.
 
-If you're running from the source archive, install [Python 3.10 or newer](https://www.python.org/downloads/windows/) and double-click `SaveSync.pyw`. To host game transfers from source, also install `cryptography` with `python -m pip install cryptography`.
+If you're running from source instead, install [Python 3.10 or newer](https://www.python.org/downloads/windows/), run `python -m pip install -r requirements.txt`, and double-click `SaveSync.pyw`.
 
-## Add to Steam Deck Gaming Mode
+## Install on Steam Deck
 
-Do this setup once in Desktop Mode. After that, open **SaveSync** from **Library > Non-Steam** in Gaming Mode. If SaveSync is already in Steam, extract the update over the existing app folder so the shortcut still works.
+Download `SaveSync-SteamDeck.tar.gz` from the [GitHub Releases](https://github.com/brandonrjguth/SaveSync/releases) page in Desktop Mode. No Python installation or manual dependencies are required — everything is bundled.
 
-1. In Discover, install **Google Chrome** or **Chromium**, or use the one you already have. SaveSync uses it to show its own window. The launcher uses SteamOS's `python3` and requires Python 3.10 or newer.
-2. Extract `SaveSync-SteamDeck.tar.gz` into a folder you intend to keep, such as `Home/Applications`. The archive marks `SaveSync.sh` executable. If you copied the files another way, in Dolphin open the script's **Properties > Permissions** and enable **Is executable**.
-3. In the desktop Steam client, select **Games > Add a Non-Steam Game to My Library > Browse** and choose the extracted `SaveSync.sh`. Select **All Files** if the script is hidden by the file filter. Add the shortcut, then rename it **SaveSync** in its Steam properties if it appears as **SaveSync.sh**. Leave the compatibility tool option off.
-4. Return to Gaming Mode and open **SaveSync**. Use the touchscreen or set the shortcut's Steam Input layout to **Keyboard (WASD) and Mouse** for pointer controls. Press **Steam + X** for the on-screen keyboard. The **Exit** button returns you to Steam.
+1. Right-click `SaveSync-SteamDeck.tar.gz` in Dolphin and choose **Extract > Extract archive here**.
+2. Open the extracted `SaveSync-SteamDeck` folder and double-click **Install SaveSync** (or run `./install.sh` in Konsole).
+3. The installer copies SaveSync to `~/.local/share/SaveSync` and creates **SaveSync** shortcuts on your Desktop and in the Application Menu. Re-running the installer with a newer release updates the app while keeping your settings and library intact.
+4. To also open **SaveSync** from **Gaming Mode**, open the Application Menu, right-click **SaveSync**, and select **Add to Steam**. In Gaming Mode, use the touchscreen or set the shortcut's Steam Input layout to **Keyboard (WASD) and Mouse**, and press **Steam + X** for the on-screen keyboard. The **Exit** button returns you to Steam.
 
-See [Valve's Steam Deck Desktop FAQ](https://help.steampowered.com/en/faqs/view/671A-4453-E8D2-323C) for the Non-Steam library workflow.
+SaveSync opens in its own window using Chrome, Chromium, Edge, Brave, or Firefox (whichever is installed from Discover or pre-installed). See [Valve's Steam Deck Desktop FAQ](https://help.steampowered.com/en/faqs/view/671A-4453-E8D2-323C) for the Non-Steam library workflow.
 
 ## Connect your devices
 
@@ -49,9 +49,9 @@ Install [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader#install
 
 ### Copy a game
 
-1. Put both devices on the same trusted network. On Windows, open **Game transfer > Start sharing** with the PC's private LAN address shown in the app. If Windows Firewall prompts, allow SaveSync on the private network. The host listens on TCP port 47835 while sharing is active.
+1. Put both devices on the same trusted network. On Windows, open **Game transfer > Start sharing** with the PC's private LAN address shown in the app. If Windows Firewall prompts, allow SaveSync on the private network. The host listens on TCP and UDP port 47835 while sharing is active and shows a 6-character pairing code (for example, `K7M-4P9`).
 2. Enter the game title and its Windows install folder. Games added with an install folder offer **Send to Steam Deck** from the library, which fills this form in advance. Optionally use **Find executables** and pick the launch executable, or leave it blank to choose on the Deck after the download. If you want to carry progress over, select the matching **Link a save entry**. With the game closed, select **Share game**. SaveSync publishes newer local saves if the linked entry is ready to upload.
-3. On the Deck, open SaveSync from **Library > Non-Steam**. Under **Game transfer**, paste the PC's full connection code and choose **Connect to PC**. Keep the code private. It grants access to the folders shared for that session.
+3. On the Deck, open SaveSync and select **Game transfer**. SaveSync automatically finds your PC on the local network (or you can expand **Can’t find your PC? Enter IP manually** if your router blocks local discovery). Type the 6-character pairing code shown on Windows and choose **Connect to PC**. Keep the code private; after 5 wrong guesses the session locks until you start a new one.
 4. Choose an install folder and select **Download** next to the game. Leave **Add to Steam with Proton Experimental** selected. Keep the PC's SaveSync window open until the transfer finishes. If the executable was left blank on the PC, SaveSync lists the downloaded game's executables: pick one and the Steam shortcut is queued. The new entry appears under **Library > Non-Steam**. If Steam setup needs attention, use the SaveSync Bridge panel in Decky's Quick Access menu.
 
 SaveSync can map a linked save location automatically when it lives under the game folder or under Windows Documents, Saved Games, or AppData. If the same shared save library is already available on the Deck, SaveSync pulls the current snapshot during setup. When you use **Find local saves** for a transferred game on the Deck, the scan starts by itself and pre-fills the game's Proton prefix. For a custom location, map the local path in **Game library**. Select **Retry setup** in **Game transfer** if the shared save library was still arriving. Later uploads and downloads still happen on demand from **Game library** with the game closed.

@@ -1,0 +1,115 @@
+name: Build and Release SaveSync
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v1.2.0). Leave blank to build artifacts without publishing a release."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows Installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Determine version
+        id: meta
+        shell: pwsh
+        run: |
+          $raw = "${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          $ver = ($raw -replace '^v', '')
+          if (-not ($ver -match '^\d+\.\d+\.\d+')) { $ver = "1.2.0" }
+          echo "version=$ver" >> $env:GITHUB_OUTPUT
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File build\windows.ps1 -Version "${{ steps.meta.outputs.version }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: dist/SaveSync-Setup.exe
+          if-no-files-found: error
+
+  build-steamdeck:
+    name: Build Steam Deck Installer
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build standalone Steam Deck archive
+        run: bash build/steamdeck.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: steamdeck-installer
+          path: dist/SaveSync-SteamDeck.tar.gz
+          if-no-files-found: error
+
+  build-decky-bridge:
+    name: Build Decky Bridge Plugin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build and package Decky plugin
+        run: |
+          cd decky-bridge
+          npm install
+          npm run build
+          mkdir -p "../dist/decky-stage/SaveSync Bridge/dist"
+          cp plugin.json package.json main.py "../dist/decky-stage/SaveSync Bridge/"
+          cp -r dist/* "../dist/decky-stage/SaveSync Bridge/dist/"
+          if [ -f node_modules/@decky/api/LICENSE ]; then
+            cp node_modules/@decky/api/LICENSE "../dist/decky-stage/SaveSync Bridge/LICENSE-decky-api"
+          fi
+          cd ../dist/decky-stage
+          zip -r ../SaveSync-Decky-Bridge.zip "SaveSync Bridge"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: decky-bridge
+          path: dist/SaveSync-Decky-Bridge.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: [build-windows, build-steamdeck, build-decky-bridge]
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          files: |
+            release-assets/SaveSync-Setup.exe
+            release-assets/SaveSync-SteamDeck.tar.gz
+            release-assets/SaveSync-Decky-Bridge.zip

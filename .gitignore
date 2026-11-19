@@ -2,6 +2,8 @@ __pycache__/
 *.py[cod]
 
 # Packaged downloads are uploaded to GitHub Releases.
+/dist/
+/build/SaveSync/
 /SaveSync.exe
 /SaveSync.zip
 /SaveSync-SteamDeck.tar.gz

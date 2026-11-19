@@ -12,6 +12,7 @@ import socket
 import ssl
 import tempfile
 import threading
+import time
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -24,6 +25,38 @@ PORT = 47835
 MAX_MANIFEST = 32 * 1024**2
 MAX_FILES = 200000
 NETS = tuple(map(ipaddress.ip_network, ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8")))
+DISCOVER_REQUEST = b"SAVESYNC-DISCOVER-V1"
+PAIR_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+PAIR_LENGTH = 6
+MAX_PAIR_FAILURES = 5
+PAIR_NONCE_TTL = 60
+
+
+def generate_pair_code():
+    raw = "".join(secrets.choice(PAIR_ALPHABET) for _ in range(PAIR_LENGTH))
+    return f"{raw[:3]}-{raw[3:]}"
+
+
+def normalize_pair_code(value):
+    if not isinstance(value, str):
+        raise SaveError("Enter the 6-character pairing code shown on the PC.")
+    cleaned = "".join(char for char in value.upper() if char not in " -_\t\r\n")
+    if len(cleaned) != PAIR_LENGTH or any(char not in PAIR_ALPHABET for char in cleaned):
+        raise SaveError("Enter the 6-character pairing code shown on the PC (for example, K7M-4P9).")
+    return cleaned
+
+
+def pair_key(code_raw, pin, server_nonce, client_nonce):
+    salt = f"savesync-pair-v2:{pin}:{server_nonce}:{client_nonce}".encode("ascii")
+    return hashlib.scrypt(code_raw.encode("ascii"), salt=salt, n=16384, r=8, p=1, dklen=32)
+
+
+def pair_proof(key, role):
+    return hmac.new(key, role, hashlib.sha256).hexdigest()
+
+
+def is_hex(value, length):
+    return isinstance(value, str) and len(value) == length and all(char in "0123456789abcdef" for char in value)
 
 
 def lan_address(value):
@@ -116,7 +149,8 @@ def tls_server(directory, address):
         from cryptography.hazmat.primitives.asymmetric import ec
         from cryptography.x509.oid import NameOID
     except ImportError as error:
-        raise SaveError("The PC transfer host needs the cryptography Python package.") from error
+        raise SaveError("The PC transfer host needs the cryptography Python package. "
+                        "Run the SaveSync installer, or install it with: python -m pip install cryptography") from error
     key = ec.generate_private_key(ec.SECP256R1())
     now = datetime.now(timezone.utc)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "SaveSync LAN")])
@@ -153,13 +187,91 @@ class LANHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
-    def send_body(self, body, content_type):
-        self.send_response(200)
+    def send_body(self, body, content_type, status=200):
+        self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def send_json(self, data, status=200):
+        self.send_body(encode(data), "application/json", status=status)
+
+    def do_POST(self):
+        server = self.server
+        if server.stopped.is_set() or self.headers.get("Host") != server.peer:
+            self.send_error(403)
+            return
+        if self.path not in ("/v1/pair/start", "/v1/pair/finish"):
+            self.send_error(404)
+            return
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+            if not 0 < size <= 4096:
+                raise ValueError
+            payload = json.loads(self.rfile.read(size))
+            if not isinstance(payload, dict):
+                raise ValueError
+        except (ValueError, OSError):
+            self.send_json({"error": "Invalid pairing request."}, status=400)
+            return
+
+        now = time.monotonic()
+        if self.path == "/v1/pair/start":
+            client_nonce = payload.get("client_nonce")
+            if not is_hex(client_nonce, 32):
+                self.send_json({"error": "Invalid pairing request."}, status=400)
+                return
+            with server.lock:
+                if server.pair_locked:
+                    self.send_json({"error": "Too many incorrect codes. End the session on the PC and start a new one."}, status=429)
+                    return
+                server.pending_nonces = {
+                    key: value for key, value in server.pending_nonces.items()
+                    if now - value[1] < PAIR_NONCE_TTL
+                }
+                if len(server.pending_nonces) >= 32:
+                    oldest = min(server.pending_nonces, key=lambda key: server.pending_nonces[key][1])
+                    server.pending_nonces.pop(oldest, None)
+                server_nonce = secrets.token_hex(16)
+                server.pending_nonces[server_nonce] = (client_nonce, now)
+            self.send_json({"server_nonce": server_nonce})
+            return
+
+        client_nonce = payload.get("client_nonce")
+        server_nonce = payload.get("server_nonce")
+        proof = payload.get("proof")
+        if not (is_hex(client_nonce, 32) and is_hex(server_nonce, 32) and is_hex(proof, 64)):
+            self.send_json({"error": "Invalid pairing request."}, status=400)
+            return
+        with server.lock:
+            if server.pair_locked:
+                self.send_json({"error": "Too many incorrect codes. End the session on the PC and start a new one."}, status=429)
+                return
+            pending = server.pending_nonces.pop(server_nonce, None)
+            code_raw = server.pair_code_raw
+            pin = server.pin
+        if pending is None or now - pending[1] >= PAIR_NONCE_TTL or not hmac.compare_digest(pending[0], client_nonce):
+            self.send_json({"error": "Pairing session expired. Try connecting again."}, status=403)
+            return
+        key = pair_key(code_raw, pin, server_nonce, client_nonce)
+        expected = pair_proof(key, b"client")
+        if not hmac.compare_digest(proof, expected):
+            with server.lock:
+                server.failed_pairs += 1
+                locked = server.failed_pairs >= MAX_PAIR_FAILURES
+                if locked:
+                    server.pair_locked = True
+            time.sleep(0.5)
+            message = ("Too many incorrect codes. End the session on the PC and start a new one." if locked
+                       else "Incorrect pairing code. Check the 6-character code on the PC.")
+            self.send_json({"error": message}, status=429 if locked else 403)
+            return
+        with server.lock:
+            server.failed_pairs = 0
+            token = server.secret
+        self.send_json({"proof": pair_proof(key, b"server"), "token": token})
 
     def do_GET(self):
         server = self.server
@@ -221,21 +333,110 @@ class LANHandler(BaseHTTPRequestHandler):
                 self.close_connection = True
 
 
+class DiscoveryResponder:
+    def __init__(self, address, server_port, listen_port=PORT):
+        self.stopped = threading.Event()
+        self.payload = encode({
+            "app": "SaveSync",
+            "v": 2,
+            "name": socket.gethostname()[:120],
+            "address": address,
+            "port": server_port,
+        })
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.sock.bind(("", listen_port))
+            self.sock.settimeout(0.5)
+        except OSError:
+            self.sock.close()
+            self.sock = None
+            return
+        threading.Thread(target=self.serve, name="SaveSync LAN discovery", daemon=True).start()
+
+    def serve(self):
+        while not self.stopped.is_set() and self.sock is not None:
+            try:
+                data, sender = self.sock.recvfrom(512)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            if data.strip() == DISCOVER_REQUEST:
+                try:
+                    self.sock.sendto(self.payload, sender)
+                except OSError:
+                    pass
+
+    def stop(self):
+        self.stopped.set()
+        if self.sock is not None:
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+            self.sock = None
+
+
+def discover_hosts(port=PORT, timeout=1.2):
+    hosts = {}
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.bind(("", 0))
+        sock.settimeout(0.25)
+        for target in ("255.255.255.255", "127.0.0.1"):
+            try:
+                sock.sendto(DISCOVER_REQUEST, (target, port))
+            except OSError:
+                pass
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            sock.settimeout(min(0.25, remaining))
+            try:
+                data, sender = sock.recvfrom(2048)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            try:
+                info = json.loads(data)
+                if not isinstance(info, dict) or info.get("app") != "SaveSync":
+                    continue
+                address = lan_address(info.get("address") or sender[0])
+                host_port = int(info.get("port", port))
+                if not 1 <= host_port <= 65535:
+                    continue
+                name = str(info.get("name") or address)[:120]
+                hosts[(address, host_port)] = {"name": name, "address": address, "port": host_port}
+            except (ValueError, TypeError, SaveError):
+                continue
+    finally:
+        sock.close()
+    return sorted(hosts.values(), key=lambda item: (item["name"].casefold(), item["address"], item["port"]))
+
+
 class Host:
     def __init__(self, directory):
         self.directory = directory
         self.server = None
+        self.discovery = None
 
     def status(self):
         server = self.server
         if server is None:
-            return {"invite": "", "games": [], "addresses": local_addresses()}
+            return {"invite": "", "code": "", "address": "", "port": 0, "locked": False,
+                    "games": [], "addresses": local_addresses()}
         with server.lock:
-            return {"invite": server.invite, "addresses": [],
+            return {"invite": server.invite, "code": server.pair_code, "address": server.address,
+                    "port": server.server_port, "locked": server.pair_locked, "addresses": [],
                     "games": [{"id": item["id"], "title": item["title"]}
                               for _, item, _ in server.offers.values()]}
 
-    def start(self, address, port=PORT):
+    def start(self, address, port=PORT, discovery_port=None):
         if self.server:
             raise SaveError("Stop the current LAN share first.")
         address = lan_address(address)
@@ -244,14 +445,26 @@ class Host:
             server = LANServer((address, port), LANHandler)
         except OSError as error:
             raise SaveError(f"Cannot listen on {address}:{port}. Check the address and port.") from error
+        code = generate_pair_code()
         server.context = context
+        server.address = address
         server.peer = f"{address}:{server.server_port}"
+        server.pin = pin
         server.secret = secrets.token_hex(24)
+        server.pair_code = code
+        server.pair_code_raw = code.replace("-", "")
+        server.failed_pairs = 0
+        server.pair_locked = False
+        server.pending_nonces = {}
         server.invite = f"{server.peer}#{pin}#{server.secret}"
         server.offers = {}
         server.lock = threading.Lock()
         server.stopped = threading.Event()
         self.server = server
+        self.discovery = DiscoveryResponder(
+            address, server.server_port,
+            PORT if discovery_port is None and port == PORT else (discovery_port or server.server_port),
+        )
         threading.Thread(target=server.serve_forever, name="SaveSync LAN host", daemon=True).start()
 
     def add(self, root, manifest):
@@ -270,11 +483,67 @@ class Host:
                 self.server.offers.pop(checked_id(game_id), None)
 
     def stop(self):
+        if self.discovery:
+            discovery, self.discovery = self.discovery, None
+            discovery.stop()
         if self.server:
             server, self.server = self.server, None
             server.stopped.set()
             server.shutdown()
             server.server_close()
+
+
+def pair(address, code, port=PORT):
+    address = lan_address(address.strip())
+    if not isinstance(port, int) or not 1 <= port <= 65535:
+        raise SaveError("Invalid PC transfer port.")
+    code_raw = normalize_pair_code(code)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    connection = http.client.HTTPSConnection(address, port, timeout=15, context=context)
+
+    def post_json(path, payload):
+        body = encode(payload)
+        connection.request("POST", path, body=body, headers={"Content-Type": "application/json"})
+        response = connection.getresponse()
+        raw = response.read(8192)
+        try:
+            data = json.loads(raw) if raw else {}
+        except ValueError:
+            data = {}
+        if response.status != 200:
+            message = data.get("error") if isinstance(data, dict) else ""
+            raise SaveError(message or f"Could not pair with the PC (HTTP {response.status}).")
+        return data
+
+    try:
+        with closing(connection):
+            connection.connect()
+            pin = hashlib.sha256(connection.sock.getpeercert(binary_form=True)).hexdigest()
+            client_nonce = secrets.token_hex(16)
+            started = post_json("/v1/pair/start", {"client_nonce": client_nonce})
+            server_nonce = started.get("server_nonce")
+            if not is_hex(server_nonce, 32):
+                raise SaveError("The PC sent an invalid pairing challenge.")
+            key = pair_key(code_raw, pin, server_nonce, client_nonce)
+            finished = post_json("/v1/pair/finish", {
+                "client_nonce": client_nonce,
+                "server_nonce": server_nonce,
+                "proof": pair_proof(key, b"client"),
+            })
+            server_proof = finished.get("proof")
+            token = finished.get("token")
+            if (not is_hex(server_proof, 64)
+                    or not hmac.compare_digest(server_proof, pair_proof(key, b"server"))
+                    or not is_hex(token, 48)):
+                raise SaveError("The PC could not verify the pairing code.")
+            return f"{address}:{port}#{pin}#{token}"
+    except SaveError:
+        raise
+    except (OSError, http.client.HTTPException) as error:
+        raise SaveError(f"Could not reach the PC at {address}:{port}. Make sure sharing is started and both devices are on the same network.") from error
 
 
 class LANClient(http.client.HTTPSConnection):

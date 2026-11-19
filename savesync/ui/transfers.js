@@ -5,6 +5,7 @@ const transferCall = (action, data) => api("transfer/" + action, data);
 let transferTimer;
 let transferCatalog = [];
 let transferInvite = "";
+let transferHosts = [];
 let transferInFlight = false;
 const exeChoices = {};
 const exeSelected = {};
@@ -30,9 +31,10 @@ async function transferAction(action, data = {}) {
   try {
     const result = await transferCall(action, data);
     if (action === "connect") {
-      transferInvite = data.invite;
+      transferInvite = result.invite || data.invite || "";
       transferCatalog = result.games;
       renderCatalog();
+      transferMessage(result.host ? "Connected to " + result.host + "." : "Connected to PC.");
     } else if (action === "scan") {
       replaceOptions($("transfer-exes"), result.executables.map((path) => [path, path]));
       if (result.executables.length === 1) $("share-form").elements.exe.value = result.executables[0];
@@ -157,10 +159,13 @@ function renderTransfer(transfer) {
   }
 
   if (transfer.role === "host") {
-    $("transfer-start-form").hidden = Boolean(transfer.invite);
-    $("transfer-offer").hidden = !transfer.invite;
-    if (transfer.invite) {
-      $("transfer-code").value = transfer.invite;
+    $("transfer-start-form").hidden = Boolean(transfer.code);
+    $("transfer-offer").hidden = !transfer.code;
+    if (transfer.code) {
+      $("transfer-code").textContent = transfer.code;
+      const endpoint = transfer.port && transfer.port !== 47835 ? transfer.address + ":" + transfer.port : transfer.address;
+      $("transfer-host-address").textContent = endpoint ? "PC address: " + endpoint : "";
+      $("transfer-locked").hidden = !transfer.locked;
       const list = $("transfer-offers");
       list.replaceChildren();
       for (const game of transfer.games) {
@@ -180,6 +185,46 @@ function renderTransfer(transfer) {
     if (!$("install-folder").value) $("install-folder").value = transfer.default_parent;
     renderInstalls(transfer.installs);
     for (const control of $("transfer-catalog").querySelectorAll("button")) control.disabled = Boolean(job.running);
+  }
+}
+
+function renderDiscoveredHosts() {
+  const status = $("transfer-discovered");
+  const pickerLabel = $("transfer-host-picker-label");
+  const picker = $("transfer-host-picker");
+  if (!transferHosts.length) {
+    status.textContent = "No sharing PC found yet. Start sharing on your PC, then select Find PC or enter its IP below.";
+    pickerLabel.hidden = true;
+    picker.replaceChildren();
+    return;
+  }
+  if (transferHosts.length === 1) {
+    const host = transferHosts[0];
+    status.textContent = "Found PC: " + host.name + " (" + host.address + ")";
+    pickerLabel.hidden = true;
+    replaceOptions(picker, [[host.address + ":" + host.port, host.name + " (" + host.address + ")"]]);
+    return;
+  }
+  status.textContent = transferHosts.length + " sharing PCs found on this network.";
+  pickerLabel.hidden = false;
+  replaceOptions(picker, transferHosts.map((host) => [
+    host.address + ":" + host.port,
+    host.name + " (" + host.address + ")",
+  ]));
+}
+
+async function discoverTransferHosts() {
+  if (!transferStatus || transferStatus.role !== "deck") return;
+  $("transfer-discovered").textContent = "Searching for a sharing PC on this network…";
+  $("transfer-discover").disabled = true;
+  try {
+    const result = await transferCall("discover", {});
+    transferHosts = result.hosts || [];
+    renderDiscoveredHosts();
+  } catch (error) {
+    $("transfer-discovered").textContent = "Could not scan network. Enter the PC IP address manually below.";
+  } finally {
+    $("transfer-discover").disabled = false;
   }
 }
 
@@ -208,7 +253,9 @@ function openTransfer(game = null) {
     }
   }
   transferDialog.showModal();
-  tickTransfers();
+  tickTransfers().then(() => {
+    if (transferStatus && transferStatus.role === "deck") discoverTransferHosts();
+  });
   transferTimer = setInterval(tickTransfers, 1000);
 }
 
@@ -228,18 +275,31 @@ function transferForm(id, action) {
 
 transferForm("transfer-start-form", "start");
 transferForm("share-form", "share");
-transferForm("transfer-connect-form", "connect");
+$("transfer-connect-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const code = $("transfer-code-input").value.trim();
+  let address = $("transfer-manual-address").value.trim();
+  let port = "";
+  if (!address && transferHosts.length) {
+    const chosen = $("transfer-host-picker").value || (transferHosts[0].address + ":" + transferHosts[0].port);
+    const parts = chosen.split(":");
+    address = parts[0] || "";
+    port = parts[1] || "";
+  }
+  transferAction("connect", { code, address, port });
+});
+$("transfer-discover").addEventListener("click", () => discoverTransferHosts());
 $("transfer-stop").addEventListener("click", () => transferAction("stop"));
 $("transfer-scan").addEventListener("click", () => transferAction("scan", {
   folder: $("share-form").elements.folder.value,
 }));
 $("transfer-copy").addEventListener("click", async () => {
-  $("transfer-code").select();
+  const code = $("transfer-code").textContent.trim();
   try {
-    await navigator.clipboard.writeText($("transfer-code").value);
-    transferMessage("Connection code copied.");
+    await navigator.clipboard.writeText(code);
+    transferMessage("Pairing code copied.");
   } catch {
-    transferMessage("Copy the selected connection code.");
+    transferMessage("Pairing code: " + code);
   }
 });
 transferCall("status").then((transfer) => {

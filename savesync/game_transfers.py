@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .library import checked_id, clean_path, overlap
 from .snapshots import SaveError, path_kind, validate_names, write_json
-from .transfer import Host, catalog, download, game_files, install_parent, manifest_for
+from .transfer import PORT, Host, catalog, discover_hosts, download, game_files, install_parent, manifest_for, pair
 
 
 def queue_dir():
@@ -102,8 +102,10 @@ class GameTransfers:
             self.host.remove(data["id"])
         elif action == "share":
             self.share(data)
+        elif action == "discover":
+            return {"hosts": discover_hosts()}
         elif action == "connect":
-            return {"games": catalog(data["invite"])}
+            return self.connect(data)
         elif action == "exes":
             return {"executables": self.list_executables(checked_id(data["id"]))}
         elif action == "download":
@@ -165,6 +167,35 @@ class GameTransfers:
             return {"message": "Game is ready to download on the Deck."}
 
         self.start_job("Preparing game folder", prepare)
+
+    def connect(self, data):
+        raw_invite = str(data.get("invite") or "").strip()
+        if "#" in raw_invite:
+            return {"games": catalog(raw_invite), "invite": raw_invite}
+        code = str(data.get("code") or raw_invite).strip()
+        address = str(data.get("address") or "").strip()
+        raw_port = data.get("port")
+        port = PORT
+        if address and ":" in address:
+            host_part, _, port_part = address.rpartition(":")
+            if port_part.isdigit():
+                address = host_part.strip()
+                port = int(port_part)
+        if raw_port not in (None, ""):
+            try:
+                port = int(raw_port)
+            except (ValueError, TypeError) as error:
+                raise SaveError("Invalid PC port.") from error
+        if not address:
+            hosts = discover_hosts()
+            if not hosts:
+                raise SaveError("No sharing PC was found on this network. Make sure Start sharing is active on the PC, or enter its IP address below.")
+            if len(hosts) > 1:
+                raise SaveError("Multiple PCs are sharing on this network. Choose your PC from the list above.")
+            address = hosts[0]["address"]
+            port = hosts[0]["port"]
+        invite = pair(address, code, port)
+        return {"games": catalog(invite), "invite": invite, "host": address}
 
     def fetch(self, data):
         parent = install_parent(data["folder"], self.library)
