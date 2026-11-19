@@ -236,7 +236,6 @@ async function showGame() {
   }
   heading.append(element("h2", game.title), tools);
   detail.append(heading);
-  if (game.install) detail.append(element("p", "Game folder"), element("div", game.install, "location"));
   if (game.detecting) {
     const status = element("div", "", "status-box");
     status.append(element("h3", "Waiting for a new save"),
@@ -254,7 +253,7 @@ async function showGame() {
   }
 
   const checking = element("p", "Checking save files…");
-  detail.append(element("p", "Save location"), element("div", game.path, "location"), checking);
+  detail.append(checking);
   try {
     const review = await api("review", { id: game.id });
     if (request !== reviewRequest) return;
@@ -450,6 +449,23 @@ bindForm("shortcut-form", async (data) => {
   const result = await api("shortcut", { ...data, id: $("shortcut-form").dataset.game });
   $("shortcut-dialog").close();
   notice(result.message);
+});
+$("shortcut-browse").addEventListener("click", async () => {
+  const form = $("shortcut-form");
+  const browse = $("shortcut-browse");
+  const game = form.dataset.game;
+  browse.disabled = true;
+  form.querySelector('[type="submit"]').disabled = true;
+  formError(form, "");
+  try {
+    const result = await api("browse-executable", { id: game });
+    if (result.path && form.dataset.game === game) form.elements.exe.value = result.path;
+  } catch (error) {
+    formError(form, error.message);
+  } finally {
+    browse.disabled = false;
+    form.querySelector('[type="submit"]').disabled = false;
+  }
 });
 $("cloud-settings-button").addEventListener("click", openCloudSettings);
 $("cloud-show-code").addEventListener("click", () => {

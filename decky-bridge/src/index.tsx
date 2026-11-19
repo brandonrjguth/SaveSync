@@ -58,6 +58,14 @@ function runningApps() {
   return new Set([...visible.filter((appid) => appid && !stopped.has(appid)), ...started]);
 }
 
+function canDownloadNow() {
+  try {
+    return Array.isArray(steam.SteamUIStore?.RunningApps) && runningApps().size === 0;
+  } catch {
+    return false;
+  }
+}
+
 function serializeSync<T>(work: () => Promise<T>): Promise<T> {
   const request = syncWork.then(work);
   syncWork = request.catch((error) => console.error("SaveSync", error));
@@ -174,9 +182,12 @@ function Panel() {
   const [state, setState] = useState<SyncState>({ bindings: {}, games: {} });
   const [active, setActive] = useState<number[]>([]);
   const [selected, setSelected] = useState<number>();
+  const [closedGame, setClosedGame] = useState("");
   const [details, setDetails] = useState<SaveResult>({});
   const appid = selected && active.includes(selected) ? selected : active.length === 1 ? active[0] : 0;
   const binding = state.bindings[appid];
+  const idleGame = !active.length && state.games[closedGame] ? closedGame : "";
+  const selectedGame = binding?.id || idleGame;
   const refresh = async () => {
     try {
       setJobs(await pending());
@@ -195,10 +206,10 @@ function Panel() {
   useEffect(() => {
     let valid = true;
     setDetails({});
-    if (binding) void serializeSync(() => syncAction(binding.id, "status"))
+    if (selectedGame) void serializeSync(() => syncAction(selectedGame, "status"))
       .then((result) => { if (valid) setDetails(result); }).catch((reason) => { if (valid) setError(String(reason)); });
     return () => { valid = false; };
-  }, [binding?.id]);
+  }, [selectedGame]);
   const configure = async (id: string, auto: boolean, download: boolean) => {
     try {
       await serializeSync(() => syncConfig(appid, id, auto, download));
@@ -210,29 +221,46 @@ function Panel() {
     try { setDetails(await serializeSync(() => syncAction(binding.id, "upload"))); }
     catch (reason) { setError(String(reason)); }
   };
+  const downloadNow = async () => {
+    if (!idleGame) return;
+    try {
+      const result = await serializeSync(() => canDownloadNow()
+        ? syncAction(idleGame, "download")
+        : Promise.resolve({error: "Close the game before downloading a save."}));
+      setDetails((previous) => ({...previous, ...result}));
+    } catch (reason) { setError(String(reason)); }
+  };
   return (
     <PanelSection title="SaveSync">
       {active.length > 1 && active.map((id) => <PanelSectionRow key={id}>
-        <ButtonItem onClick={() => setSelected(id)}>{state.games[state.bindings[id]?.id] || "Steam app " + id}</ButtonItem>
+        <ButtonItem layout="below" onClick={() => setSelected(id)}>{state.games[state.bindings[id]?.id] || "Steam app " + id}</ButtonItem>
       </PanelSectionRow>)}
       {binding && <>
         <PanelSectionRow><div>{state.games[binding.id]}{details.latest && <div>
           Latest cloud save · {details.latest.device} · {new Date(details.latest.created).toLocaleString()}
         </div>}{details.pending && <div>Upload pending</div>}{<div>{details.error || details.message}</div>}</div></PanelSectionRow>
-        <PanelSectionRow><ButtonItem onClick={upload}>Upload saved checkpoint now</ButtonItem></PanelSectionRow>
-        <PanelSectionRow><ButtonItem onClick={() => configure(binding.id, Boolean(binding.auto), !binding.download)}>
-          {binding.download ? "Cancel download on exit" : "Download latest cloud save after exit"}
+        <PanelSectionRow><ButtonItem layout="below" onClick={upload}>Upload checkpoint</ButtonItem></PanelSectionRow>
+        <PanelSectionRow><ButtonItem layout="below" onClick={() => configure(binding.id, Boolean(binding.auto), !binding.download)}>
+          {binding.download ? "Cancel download" : "Download on exit"}
         </ButtonItem></PanelSectionRow>
-        <PanelSectionRow><ButtonItem onClick={() => configure(binding.id, !binding.auto, Boolean(binding.download))}>
-          {binding.auto ? "Turn off auto-upload on exit" : "Turn on auto-upload on exit"}
+        <PanelSectionRow><ButtonItem layout="below" onClick={() => configure(binding.id, !binding.auto, Boolean(binding.download))}>
+          {binding.auto ? "Disable auto-upload" : "Enable auto-upload"}
         </ButtonItem></PanelSectionRow>
       </>}
       {appid > 0 && !binding && Object.entries(state.games).map(([key, title]) => (
-        <PanelSectionRow key={key}><ButtonItem onClick={() => configure(key, false, false)}>Link to {title}</ButtonItem></PanelSectionRow>
+        <PanelSectionRow key={key}><ButtonItem layout="below" onClick={() => configure(key, false, false)}>Link to {title}</ButtonItem></PanelSectionRow>
       ))}
-      {!active.length && <PanelSectionRow><div>Open a game to manage its saves here.</div></PanelSectionRow>}
+      {!active.length && (idleGame ? <>
+        <PanelSectionRow><div>{state.games[idleGame]}{details.latest && <div>
+          Latest cloud save · {details.latest.device} · {new Date(details.latest.created).toLocaleString()}
+        </div>}{<div>{details.error || details.message}</div>}</div></PanelSectionRow>
+        <PanelSectionRow><ButtonItem layout="below" onClick={downloadNow}>Download latest save</ButtonItem></PanelSectionRow>
+        <PanelSectionRow><ButtonItem layout="below" onClick={() => setClosedGame("")}>Choose another game</ButtonItem></PanelSectionRow>
+      </> : Object.entries(state.games).map(([key, title]) => (
+        <PanelSectionRow key={key}><ButtonItem layout="below" onClick={() => setClosedGame(key)}>{title}</ButtonItem></PanelSectionRow>
+      )))}
       <PanelSectionRow>
-        <ButtonItem onClick={async () => { await processQueue(true); await refresh(); }}>Retry Steam setup</ButtonItem>
+        <ButtonItem layout="below" onClick={async () => { await processQueue(true); await refresh(); }}>Retry Steam setup</ButtonItem>
       </PanelSectionRow>
       <PanelSectionRow>
         <div>{error || (jobs.length ? "" : "Download a game in SaveSync to add it here.")}</div>

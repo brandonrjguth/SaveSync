@@ -168,6 +168,7 @@ class Handler(BaseHTTPRequestHandler):
                 "/api/cloud": lambda: cloud.action(data),
                 "/api/automation": lambda: automation.action(library, data["id"], data["action"]),
                 "/api/shortcut": lambda: automation.create_shortcut(library, data),
+                "/api/browse-executable": lambda: automation.browse_executable(library, data["id"]),
                 "/api/recover": lambda: {"message": library.recover(data["id"])},
                 "/api/discover": lambda: {"results": self.server.transfers.discover_saves(data)},
                 "/api/detect_save": lambda: self.server.transfers.detect_save_location(data),
@@ -188,7 +189,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             response = actions[self.path]()
             status = 200
-        except (SaveError, OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile, http.client.HTTPException) as error:
+        except (SaveError, OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile, http.client.HTTPException,
+                subprocess.TimeoutExpired) as error:
             status, response = 400, {"error": str(error)}
         except Exception:
             traceback.print_exc(file=self.server.log)

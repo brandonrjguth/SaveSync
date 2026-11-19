@@ -67,6 +67,53 @@ def launcher_path(library, key):
     return library.directory / "launchers" / (checked_id(key) + ".json")
 
 
+def windows_script(script, payload, timeout):
+    process = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-STA", "-Command",
+                              "$ErrorActionPreference='Stop';" + script], input=json.dumps(payload), text=True,
+                             encoding="utf-8", capture_output=True, timeout=timeout,
+                             creationflags=subprocess.CREATE_NO_WINDOW)
+    if process.returncode:
+        raise SaveError(process.stderr.strip().splitlines()[0] if process.stderr.strip()
+                        else "Windows could not complete the request.")
+    return process.stdout.strip()
+
+
+POWERSHELL_INPUT = """
+[Console]::InputEncoding = [Text.Encoding]::UTF8
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+$p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+"""
+
+
+def browse_executable(library, key):
+    if os.name != "nt":
+        raise SaveError("The executable picker is available on Windows.")
+    game = library.state()["maps"].get(checked_id(key))
+    if not game:
+        raise SaveError("Choose a game from the SaveSync library first.")
+    install = game.get("install")
+    starting_folder = install if install and Path(install).is_dir() else str(Path.home())
+    script = POWERSHELL_INPUT + """
+Add-Type -AssemblyName System.Windows.Forms
+$owner = New-Object System.Windows.Forms.Form
+$owner.TopMost = $true
+$picker = New-Object System.Windows.Forms.OpenFileDialog
+try {
+    $picker.Title = 'Choose the game executable'
+    $picker.InitialDirectory = $p.folder
+    $picker.Filter = 'Windows executables (*.exe)|*.exe'
+    $picker.CheckFileExists = $true
+    if ($picker.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
+        [Console]::WriteLine($picker.FileName)
+    }
+} finally {
+    $picker.Dispose()
+    $owner.Dispose()
+}
+"""
+    return {"path": windows_script(script, {"folder": starting_folder}, timeout=300)}
+
+
 def create_shortcut(library, data):
     if os.name != "nt" or not getattr(sys, "frozen", False):
         raise SaveError("Install the Windows SaveSync release to create game shortcuts.")
@@ -84,12 +131,11 @@ def create_shortcut(library, data):
     arguments = subprocess.list2cmdline(["--data-dir", str(library.directory), "--launch-game", key])
     payload = {"target": sys.executable, "args": arguments, "name": f"SaveSync - {name} ({key[:8]}).lnk",
                "icon": str(exe)}
-    script = """
-[Console]::InputEncoding = [Text.Encoding]::UTF8
-[Console]::OutputEncoding = [Text.Encoding]::UTF8
-$p = [Console]::ReadToEnd() | ConvertFrom-Json
+    script = POWERSHELL_INPUT + """
 $shell = New-Object -ComObject WScript.Shell
-$path = Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) $p.name
+$desktop = [Environment]::GetFolderPath('DesktopDirectory', 'Create')
+if (!$desktop) { throw 'Windows could not locate your Desktop folder.' }
+$path = Join-Path $desktop $p.name
 $link = $shell.CreateShortcut($path)
 $link.TargetPath = $p.target
 $link.Arguments = $p.args
@@ -97,14 +143,11 @@ $link.IconLocation = $p.icon + ',0'
 $link.Save()
 [Console]::WriteLine($path)
 """
-    process = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
-                              "$ErrorActionPreference='Stop';" + script], input=json.dumps(payload), text=True,
-                             encoding="utf-8", capture_output=True, timeout=15,
-                             creationflags=subprocess.CREATE_NO_WINDOW)
-    if process.returncode or not Path(process.stdout.strip()).is_file():
+    path = windows_script(script, payload, timeout=15)
+    if not path or not Path(path).is_file():
         raise SaveError("Windows could not create the desktop shortcut.")
     write_json(launcher_path(library, key), {"exe": str(exe), "args": game_args})
-    return {"message": "Desktop shortcut created: " + process.stdout.strip()}
+    return {"message": "Desktop shortcut created: " + path}
 
 
 def launch(library, key, invoke):
