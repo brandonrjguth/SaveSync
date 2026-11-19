@@ -9,6 +9,7 @@ let transferHosts = [];
 let transferInFlight = false;
 const exeChoices = {};
 const exeSelected = {};
+const exeLoading = {};
 
 function formatBytes(bytes) {
   if (!bytes) return "0 B";
@@ -48,7 +49,10 @@ async function transferAction(action, data = {}) {
     } else {
       renderTransfer(result);
       if (action === "finish" && data.exe) {
-        transferMessage("Executable chosen. The Steam shortcut is queued.");
+        const updated = (result.installs || []).find((item) => item.id === data.id);
+        transferMessage(updated?.shortcut === "added_direct"
+          ? "Added to Steam! Restart Steam or switch to Gaming Mode if it doesn’t appear right away."
+          : "Executable chosen. The Steam shortcut is queued.");
       }
     }
   } catch (error) {
@@ -83,6 +87,21 @@ function renderCatalog() {
   }
 }
 
+function loadExeChoices(gameId) {
+  if (exeChoices[gameId] || exeLoading[gameId]) return;
+  exeLoading[gameId] = true;
+  transferCall("exes", { id: gameId }).then((result) => {
+    exeChoices[gameId] = result.executables || [];
+    if (transferStatus && transferStatus.role === "deck") {
+      renderInstalls(transferStatus.installs || []);
+    }
+  }).catch(() => {
+    // User can still click Choose executable manually.
+  }).finally(() => {
+    exeLoading[gameId] = false;
+  });
+}
+
 function renderInstalls(installs) {
   const container = $("transfer-installs");
   container.replaceChildren();
@@ -97,10 +116,12 @@ function renderInstalls(installs) {
         pending: "Waiting for the SaveSync Decky bridge",
         adding: "Adding to Steam",
         added: "Added to Steam",
+        added_direct: "Added to Steam (restart Steam or switch to Gaming Mode if not visible yet)",
         error: "Steam shortcut needs attention in the SaveSync Decky panel",
       };
       if (game.needs_exe) {
-        label.append(element("small", "Choose the game’s executable to add it to Steam"));
+        label.append(element("small", "Choose which .exe to launch in Steam:"));
+        loadExeChoices(game.id);
       } else {
         label.append(element("small", shortcuts[game.shortcut] || "Steam setup pending"));
       }
@@ -124,6 +145,8 @@ function renderInstalls(installs) {
         controls.append(button("Add to Steam", () => transferAction("finish", {
           id: game.id, exe: select.value,
         }), "primary"));
+      } else if (exeLoading[game.id]) {
+        controls.append(element("small", "Finding executables…"));
       } else {
         controls.append(button(game.exe ? "Change executable" : "Choose executable",
           () => transferAction("exes", { id: game.id })));
@@ -155,6 +178,9 @@ function renderTransfer(transfer) {
     if (progress.dataset.result !== key) {
       progress.dataset.result = key;
       transferMessage(job.error || job.message, Boolean(job.error));
+      if (job.installed && state) {
+        refresh().catch(() => {});
+      }
     }
   }
 

@@ -8,7 +8,23 @@ from pathlib import Path
 
 from .library import checked_id, clean_path, overlap
 from .snapshots import SaveError, path_kind, validate_names, write_json
+from .steam_shortcuts import add_steam_shortcut, decky_bridge_installed
 from .transfer import PORT, Host, catalog, discover_hosts, download, game_files, install_parent, manifest_for, pair
+
+HELPER_EXE_HINTS = (
+    "unitycrashhandler", "crashreport", "crashhandler", "unins", "uninstall",
+    "vcredist", "dxsetup", "redist", "ue4prereq", "ueprereq", "dotnet", "directx",
+)
+
+
+def rank_executables(names):
+    def sort_key(name):
+        stem = Path(name).stem.casefold()
+        is_helper = any(hint in stem for hint in HELPER_EXE_HINTS)
+        depth = name.count("/")
+        return (is_helper, depth, name.casefold())
+
+    return sorted(names, key=sort_key)
 
 
 def queue_dir():
@@ -300,7 +316,8 @@ class GameTransfers:
             raise SaveError("The game has not been downloaded.")
         target = Path(json.loads(receipt.read_bytes())["target"])
         sources, _ = game_files(target)
-        return [name for name in sorted(sources) if Path(name).suffix.lower() == ".exe"][:300]
+        exes = [name for name in sources if Path(name).suffix.lower() == ".exe"]
+        return rank_executables(exes)[:300]
 
     def finish(self, key, exe=""):
         receipt = self.receipts / (key + ".json")
@@ -317,35 +334,49 @@ class GameTransfers:
             raise SaveError("The downloaded executable is missing.")
         prefix = Path.home() / ".local/share/savesync-prefixes" / key
 
-        # Set up the save location before making the shortcut visible to Steam.
+        # Set up the save location and library entry before making the shortcut visible to Steam.
         record["save_message"] = self.link_saves(record, target, prefix)
         write_json(receipt, record)
         if record["steam"] and executable is not None:
             shortcut = queue_dir() / (key + ".json")
-            if not shortcut.exists():
+            if not shortcut.exists() or exe:
                 if any(char in str(executable) for char in ('"', chr(36), chr(96), "\r", "\n")):
                     raise SaveError("The executable path has characters Steam cannot safely launch.")
                 prefix.mkdir(parents=True, exist_ok=True)
-                write_json(shortcut, {"title": record["title"], "exe": str(executable), "status": "pending"})
+                if decky_bridge_installed():
+                    write_json(shortcut, {"title": record["title"], "exe": str(executable), "status": "pending"})
+                else:
+                    appid = add_steam_shortcut(record["title"], executable, prefix)
+                    if appid is not None:
+                        write_json(shortcut, {"title": record["title"], "exe": str(executable),
+                                              "status": "added_direct", "appid": appid})
+                    else:
+                        write_json(shortcut, {"title": record["title"], "exe": str(executable), "status": "pending"})
 
     def link_saves(self, record, target, prefix):
-        hint = record["save"]
-        if not hint:
-            return "No save entry was linked on the PC."
+        hint = record.get("save")
+        hint_id = hint.get("id") if isinstance(hint, dict) else None
         try:
-            key = checked_id(hint["id"])
+            ensured_id = self.library.ensure_game(record["title"], install=str(target), game_id=hint_id)
+            if not hint:
+                return "Added to Game library. Use Find local saves to link its save folder."
+            key = checked_id(hint["id"]) if hint_id else ensured_id
             games = self.library.games()["games"]
             game = next((entry for entry in games if entry["id"] == key), None)
             if game is None:
-                return "Connect the same shared save folder as the PC, then retry setup."
+                return "Added to Game library. Connect the same shared save folder as the PC, then retry setup."
             if not game["path"]:
                 if hint["base"] not in ("game", "prefix") or not hint["path"]:
-                    return "Open the linked game in Game library and map its Deck save location."
+                    return "Added to Game library. Open it there and use Find local saves."
                 if hint["base"] == "prefix" and not record["steam"]:
-                    return "Map the save location in Game library after adding the game to Steam."
+                    return "Added to Game library. Map the save location after adding the game to Steam."
+                if not self.library.state()["shared"]:
+                    return "Added to Game library. Set a shared folder in Settings, then retry setup."
                 validate_names([hint["path"]], "directory")
                 root = target if hint["base"] == "game" else prefix / "pfx/drive_c/users/steamuser"
-                self.library.map_game({"id": key, "path": str(root / hint["path"])})
+                self.library.map_game({"id": key, "path": str(root / hint["path"]), "install": str(target)})
+            if not self.library.state()["shared"]:
+                return "Added to Game library. Set a shared folder in Settings to sync saves."
             review = self.library.review(key)
             if review["status"] in ("download", "current"):
                 self.library.sync({"id": key, "token": review["token"], "choice": "auto"})

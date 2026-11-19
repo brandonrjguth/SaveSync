@@ -56,7 +56,7 @@ class Library:
             if overlap(shared, self.directory):
                 raise SaveError("Choose a shared folder outside SaveSync's local data folder.")
             for mapping in state["maps"].values():
-                if overlap(shared, Path(mapping["path"])):
+                if mapping.get("path") and overlap(shared, Path(mapping["path"])):
                     raise SaveError("The shared folder cannot overlap a configured save location.")
             (shared / "SaveSync-v1").mkdir(exist_ok=True)
         if state["shared"] != (str(shared) if shared else ""):
@@ -104,8 +104,15 @@ class Library:
         game_id = data.get("id")
         if game_id:
             game_dir = store / checked_id(game_id)
-            game = json.loads((game_dir / "game.json").read_text(encoding="utf-8"))
-            if game["id"] != game_id:
+            game_file = game_dir / "game.json"
+            if game_file.is_file():
+                game = json.loads(game_file.read_text(encoding="utf-8"))
+                if game["id"] != game_id:
+                    raise SaveError("The shared game ID is invalid.")
+            elif game_id in state["maps"]:
+                existing = state["maps"][game_id]
+                game = {"id": game_id, "title": existing["title"], "mode": data.get("mode", existing.get("mode", "auto"))}
+            else:
                 raise SaveError("The shared game ID is invalid.")
         else:
             title = data["title"].strip()
@@ -122,7 +129,7 @@ class Library:
                 or overlap(path, self.directory) or overlap(path, store.parent)):
             raise SaveError("Choose a dedicated save location outside the shared and application folders.")
         for key, mapping in state["maps"].items():
-            if key != game["id"] and overlap(path, Path(mapping["path"])):
+            if key != game["id"] and mapping.get("path") and overlap(path, Path(mapping["path"])):
                 raise SaveError("This location overlaps another game's save location.")
         previous = state["maps"].get(game["id"])
         if previous and self.pending(game["id"]).exists():
@@ -139,16 +146,53 @@ class Library:
                 raise SaveError("The game folder must be an existing directory.")
             install = str(install_path)
         files_at(path, game["mode"])
-        if not game_id:
+        if not (game_dir / "game.json").is_file():
             write_json(game_dir / "game.json", game)
-        entry = previous if previous and previous["path"] == str(path) else dict(game, path=str(path))
+        entry = previous if previous and previous.get("path") == str(path) else dict(game, path=str(path))
         if install:
             entry["install"] = install
-        else:
+        elif not previous or not previous.get("install"):
             entry.pop("install", None)
+        else:
+            entry["install"] = previous["install"]
         state["maps"][game["id"]] = entry
         write_json(self.config, state)
         return {"id": game["id"]}
+
+    def ensure_game(self, title, install="", game_id=None):
+        """Ensure a transferred game appears in the local (and shared, if connected) save library."""
+        state = self.state()
+        title = title.strip()[:160]
+        if not title:
+            return None
+        install_str = str(clean_path(install)) if install else ""
+        games = self.games()["games"]
+        match = None
+        if game_id and ID.fullmatch(game_id):
+            match = next((entry for entry in games if entry["id"] == game_id), None)
+        if match is None:
+            match = next((entry for entry in games if entry["title"].casefold() == title.casefold()), None)
+        gid = match["id"] if match else (game_id if game_id and ID.fullmatch(game_id) else uuid.uuid4().hex)
+        mode = match["mode"] if match else "directory"
+        if state["shared"]:
+            try:
+                store = self.store(state)
+                game_file = store / gid / "game.json"
+                if not game_file.is_file():
+                    write_json(game_file, {"id": gid, "title": title, "mode": mode})
+            except (SaveError, OSError):
+                pass
+        existing = state["maps"].get(gid)
+        if existing:
+            if install_str:
+                existing["install"] = install_str
+        else:
+            entry = {"id": gid, "title": title, "mode": mode, "path": ""}
+            if install_str:
+                entry["install"] = install_str
+            state["maps"][gid] = entry
+        write_json(self.config, state)
+        return gid
 
     def set_ludusavi(self, path):
         state = self.state()

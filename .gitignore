@@ -4,6 +4,7 @@ __pycache__/
 # Packaged downloads are uploaded to GitHub Releases.
 /dist/
 /build/SaveSync/
+/build/tools-stage/
 /SaveSync.exe
 /SaveSync.zip
 /SaveSync-SteamDeck.tar.gz

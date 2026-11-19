@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import tarfile
 import tempfile
@@ -23,10 +24,30 @@ BINARY_NAME = {"nt": "ludusavi.exe", "posix": "ludusavi"}
 MAX_DOWNLOAD = 256 * 1024**2
 
 
+def tls_context():
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        pass
+    for cafile in ("/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt"):
+        if Path(cafile).is_file():
+            return ssl.create_default_context(cafile=cafile)
+    return ssl.create_default_context()
+
+
+def bundled_ludusavi():
+    candidate = Path(__file__).with_name("tools") / BINARY_NAME[os.name]
+    return candidate if candidate.is_file() else None
+
+
 def find_ludusavi(configured):
     if configured and configured.strip():
         candidate = Path(configured.strip()).expanduser()
         return candidate if candidate.is_file() else None
+    bundled = bundled_ludusavi()
+    if bundled is not None:
+        return bundled
     return shutil.which("ludusavi")
 
 
@@ -91,7 +112,7 @@ def download_asset(url, expected_digest, destination):
     hasher = hashlib.sha256()
     done = 0
     try:
-        with urllib.request.urlopen(request, timeout=60) as response, destination.open("wb") as output:
+        with urllib.request.urlopen(request, timeout=60, context=tls_context()) as response, destination.open("wb") as output:
             while chunk := response.read(512 * 1024):
                 done += len(chunk)
                 if done > MAX_DOWNLOAD:
@@ -140,7 +161,7 @@ def install_ludusavi(data_directory):
     tools = data_directory / "tools" / "ludusavi"
     try:
         request = urllib.request.Request(RELEASE_URL, headers={"User-Agent": "SaveSync"})
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urllib.request.urlopen(request, timeout=30, context=tls_context()) as response:
             release = json.loads(response.read(4 * 1024**2))
     except (urllib.error.URLError, OSError, ValueError) as error:
         raise SaveError(f"Could not reach GitHub for the Ludusavi release: {error}") from error

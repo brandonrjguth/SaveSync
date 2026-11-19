@@ -6,10 +6,18 @@ set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-python3 -m pip install --disable-pip-version-check --upgrade cryptography pyinstaller
+python3 -m pip install --disable-pip-version-check --upgrade certifi cryptography pyinstaller
+
+LUDUSAVI_STAGE="$ROOT/build/tools-stage"
+LUDUSAVI_BIN="$LUDUSAVI_STAGE/tools/ludusavi/ludusavi"
+if [ ! -x "$LUDUSAVI_BIN" ]; then
+    python3 -c "from pathlib import Path; from savesync.discovery import install_ludusavi; print(install_ludusavi(Path('$LUDUSAVI_STAGE')))"
+fi
 
 python3 -m PyInstaller --noconfirm --clean --onedir --name SaveSync \
+    --collect-data certifi \
     --add-data "savesync/ui:savesync/ui" \
+    --add-binary "$LUDUSAVI_BIN:savesync/tools" \
     SaveSync.pyw
 
 "$ROOT/dist/SaveSync/SaveSync" --help >/dev/null
