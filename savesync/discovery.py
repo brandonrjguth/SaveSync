@@ -14,6 +14,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 from .snapshots import SaveError
+from .window import clean_subprocess_env
 
 RELEASE_URL = "https://api.github.com/repos/mtkennerly/ludusavi/releases/latest"
 ASSET_NAME = {"nt": re.compile(r"^ludusavi-v[\d.]+-win64\.zip$"),
@@ -45,6 +46,7 @@ def scan_saves(executable, title="", prefix=""):
     try:
         process = subprocess.run(args, capture_output=True, text=True, encoding="utf-8",
                                  errors="replace", timeout=180, stdin=subprocess.DEVNULL,
+                                 env=clean_subprocess_env(),
                                  creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     except FileNotFoundError as error:
         raise SaveError("Ludusavi could not be found. Check the executable path in Settings.") from error
@@ -161,6 +163,7 @@ def install_ludusavi(data_directory):
     try:
         process = subprocess.run([str(binary), "--version"], capture_output=True, text=True,
                                  encoding="utf-8", errors="replace", timeout=60, stdin=subprocess.DEVNULL,
+                                 env=clean_subprocess_env(),
                                  creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     except (OSError, subprocess.TimeoutExpired) as error:
         raise SaveError(f"The downloaded Ludusavi could not be started: {error}") from error

@@ -192,10 +192,27 @@ def main(window_default=False):
         return 0
     except (SaveError, OSError) as error:
         if window_mode:
+            try:
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                with log_path.open("a", encoding="utf-8") as log:
+                    print(f"SaveSync error: {error}", file=log, flush=True)
+            except OSError:
+                pass
             show_error(f"{error}\n\nWindow log: {log_path}")
         else:
             print(f"SaveSync: {error}", file=sys.stderr)
         return 1
+    except Exception as error:
+        if window_mode:
+            try:
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                with log_path.open("a", encoding="utf-8") as log:
+                    traceback.print_exc(file=log)
+            except OSError:
+                pass
+            show_error(f"SaveSync failed to start: {error}\n\nWindow log: {log_path}")
+            return 1
+        raise
     finally:
         transfers.close()
 

@@ -12,6 +12,8 @@ python3 -m PyInstaller --noconfirm --clean --onedir --name SaveSync \
     --add-data "savesync/ui:savesync/ui" \
     SaveSync.pyw
 
+"$ROOT/dist/SaveSync/SaveSync" --help >/dev/null
+
 STAGE="$ROOT/dist/SaveSync-SteamDeck"
 rm -rf "$STAGE" "$ROOT/dist/SaveSync-SteamDeck.tar.gz"
 mkdir -p "$STAGE/assets"

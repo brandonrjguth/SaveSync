@@ -11,6 +11,18 @@ from pathlib import Path
 from .snapshots import SaveError
 
 
+def clean_subprocess_env():
+    """Restore the original library path when spawning external programs from a frozen Linux binary."""
+    env = os.environ.copy()
+    if getattr(sys, "frozen", False) and os.name != "nt":
+        original = env.get("LD_LIBRARY_PATH_ORIG")
+        if original is None:
+            env.pop("LD_LIBRARY_PATH", None)
+        else:
+            env["LD_LIBRARY_PATH"] = original
+    return env
+
+
 def run_window(server, url, log):
     if webview_window(server, url, log):
         return
@@ -71,6 +83,7 @@ def browser_command():
                     return [str(path)], None, "chromium"
         raise SaveError("Install Microsoft Edge or Google Chrome to open the SaveSync window.")
 
+    env = clean_subprocess_env()
     flatpak = shutil.which("flatpak")
     if flatpak:
         for app, kind in (
@@ -78,10 +91,11 @@ def browser_command():
             ("org.chromium.Chromium", "chromium"),
             ("com.microsoft.Edge", "chromium"),
             ("com.brave.Browser", "chromium"),
+            ("com.vivaldi.Vivaldi", "chromium"),
             ("org.mozilla.firefox", "firefox"),
         ):
             if subprocess.run([flatpak, "info", app], stdout=subprocess.DEVNULL,
-                              stderr=subprocess.DEVNULL, check=False).returncode == 0:
+                              stderr=subprocess.DEVNULL, env=env, check=False).returncode == 0:
                 cache = Path.home() / ".var/app" / app / "cache"
                 cache.mkdir(parents=True, exist_ok=True)
                 return [flatpak, "run", app], cache, kind
@@ -112,7 +126,8 @@ def browser_window(server, url, log):
             ]
             if os.name != "nt" and os.environ.get("DISPLAY"):
                 args.append("--ozone-platform=x11")
-        with subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=log, stderr=log) as window:
+        with subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                              env=clean_subprocess_env()) as window:
             try:
                 while not server.exit_requested and window.poll() is None:
                     server.handle_request()
@@ -133,6 +148,10 @@ def show_error(message):
         import ctypes
         ctypes.windll.user32.MessageBoxW(None, message, "SaveSync", 0x10)
     elif dialog := shutil.which("kdialog"):
-        subprocess.run([dialog, "--title", "SaveSync", "--error", message], check=False)
+        subprocess.run([dialog, "--title", "SaveSync", "--error", message],
+                       env=clean_subprocess_env(), check=False)
+    elif dialog := shutil.which("zenity"):
+        subprocess.run([dialog, "--error", "--title=SaveSync", "--text=" + message],
+                       env=clean_subprocess_env(), check=False)
     else:
         print(message, file=sys.stderr)
