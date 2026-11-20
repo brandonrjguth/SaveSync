@@ -11,6 +11,7 @@ import tarfile
 import tempfile
 import urllib.error
 import urllib.request
+import uuid
 import zipfile
 from pathlib import Path, PurePosixPath
 
@@ -311,6 +312,79 @@ def _merge_results(groups):
             if item["files"]]
 
 
+def windows_documents():
+    import ctypes
+    from ctypes import wintypes
+
+    folder_id = (ctypes.c_ubyte * 16).from_buffer_copy(uuid.UUID("fdd39ad0-238f-46af-adb4-6c85480369c7").bytes_le)
+    path = wintypes.LPWSTR()
+    try:
+        # KF_FLAG_DONT_VERIFY honors redirected Documents even if it has not been created.
+        if ctypes.windll.shell32.SHGetKnownFolderPath(ctypes.byref(folder_id), 0x4000, None, ctypes.byref(path)) == 0:
+            return path.value
+    finally:
+        if path:
+            ctypes.windll.ole32.CoTaskMemFree(path)
+    return None
+
+
+def manifest_save_paths(manifest, title, roots):
+    games = [game for name, game in manifest.items() if name.casefold() == title.strip().casefold()]
+    if len(games) != 1:
+        return []
+    paths = {}
+    for template, rule in games[0].get("files", {}).items():
+        if "save" not in rule.get("tags", []):
+            continue
+        conditions = rule.get("when", [])
+        applicable = [condition for condition in conditions if condition.get("os", "windows") == "windows"]
+        if conditions and not applicable:
+            continue
+        anchor, _, relative = template.partition("/")
+        base = roots.get(anchor)
+        # Accept literal locations only. Wildcards and unresolved user/store tokens can
+        # point at different files or profiles, even when the parent directory is known.
+        if not base or not relative or re.search(r'[<>*?\[\]:"|\\\x00-\x1f]', relative):
+            continue
+        parts = relative.split("/")
+        if any(not part or part != part.rstrip(" .") for part in parts):
+            continue
+        root = Path(base)
+        if not root.is_absolute():
+            continue
+        root = root.resolve()
+        path = root.joinpath(*parts).resolve()
+        if path == root or not path.is_relative_to(root):
+            continue
+        stores = {condition["store"] for condition in applicable} if applicable and all(
+            condition.get("store") for condition in applicable
+        ) else set()
+        paths[str(path)] = {"path": str(path), "stores": sorted(stores)}
+    return list(paths.values())
+
+
+def expected_windows_saves(command, title, install):
+    try:
+        report = subprocess.run(
+            [str(command), "manifest", "show", "--api"], capture_output=True, text=True,
+            encoding="utf-8", timeout=20, stdin=subprocess.DEVNULL, env=clean_subprocess_env(),
+            creationflags=subprocess.CREATE_NO_WINDOW, check=True,
+        )
+        manifest = json.loads(report.stdout)
+        roots = {
+            "<home>": Path.home(), "<base>": _strip_quotes(install) or None,
+            "<winDocuments>": windows_documents(),
+            "<winAppData>": os.environ.get("APPDATA"),
+            "<winLocalAppData>": os.environ.get("LOCALAPPDATA"),
+            "<winLocalAppDataLow>": Path.home() / "AppData/LocalLow",
+            "<winProgramData>": os.environ.get("ProgramData"),
+            "<winPublic>": os.environ.get("PUBLIC"),
+        }
+        return manifest_save_paths(manifest, title, roots)
+    except (OSError, ValueError, AttributeError, TypeError, RuntimeError, subprocess.SubprocessError):
+        return []
+
+
 def scan_saves(executable, title="", prefix="", install=""):
     folder_groups = []
     if install and install.strip():
@@ -351,6 +425,10 @@ def scan_saves(executable, title="", prefix="", install=""):
                 pass
 
     merged = _merge_results([*ludusavi_groups, *folder_groups])
+    if not merged and os.name == "nt" and title:
+        expected = expected_windows_saves(command, title, install)
+        if expected:
+            return [{"title": title, "files": [], "expected": expected}]
     if not merged and unknown and title:
         raise SaveError("Ludusavi did not recognize that title and no save files were found in the game folder. "
                         "Try its exact store name, provide the game folder, or enter a save path manually.")

@@ -41,6 +41,8 @@ SaveSync opens in its own window using Chrome, Chromium, Edge, Brave, or Firefox
 
 Use a dedicated folder whose relative filenames and folder layout match on both devices, or choose single-file mode if the filename differs. Each entry maps one location per device. For a title with multiple unrelated save paths, add a separate entry for each. Folder sync can remove files absent from the chosen version. It preserves a recovery ZIP in the local app data folder before overwriting or removing files. SaveSync keeps previously published snapshots and does not prune history automatically.
 
+On Windows, if the scan finds no files, SaveSync can show literal paths tagged as saves in Ludusavi's manifest for the exact title. Confirm an expected path before using it. Paths with wildcards or unresolved profile or store placeholders need manual setup.
+
 ### Steam Deck and DRM-free games
 
 If a transferred Windows game uses a different Proton prefix from the one SaveSync selected, open its entry in **Game library** and choose **Detect active save location**. Launch the game from the Steam shortcut you normally use, make a test save, then close it. Return to SaveSync and select **Check for new save**. SaveSync updates the mapping when one matching location changes. Sync for that game pauses during detection. If the test save conflicts with the Windows snapshot, choose the Windows version in **Save history** to continue from your PC progress.

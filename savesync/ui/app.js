@@ -527,33 +527,48 @@ bindForm("settings-form", async (data) => {
 function discoveryCandidates(results, mode) {
   const folders = new Map();
   const files = new Map();
+  const expected = [];
   for (const result of results) {
     const source = { title: result.title, suggested: Boolean(result.suggested) };
     for (const entry of result.files) {
       if (mode !== "file" && !folders.has(entry.folder)) folders.set(entry.folder, source);
       if (mode !== "directory" && !files.has(entry.path)) files.set(entry.path, source);
     }
+    for (const entry of result.expected || []) {
+      expected.push({ title: result.title, path: entry.path, stores: entry.stores, expected: true });
+    }
   }
   return [...folders].map(([path, source]) => ({ ...source, path, kind: "directory" }))
-    .concat([...files].map(([path, source]) => ({ ...source, path, kind: "file" })));
+    .concat([...files].map(([path, source]) => ({ ...source, path, kind: "file" })), expected);
 }
 
-function renderMapCandidates(candidates) {
+function renderMapCandidates(candidates, mode) {
   const box = $("map-candidates");
   box.replaceChildren();
   const singleTitle = candidates.every((candidate) => candidate.title === candidates[0].title);
   for (const candidate of candidates) {
     const row = element("div", "", "scan-file");
     row.append(element("div", (singleTitle ? "" : candidate.title + " · ") + candidate.path, "location"));
-    const use = () => {
+    if (candidate.expected && candidate.stores.length) {
+      row.append(element("p", "Ludusavi lists this location for " + candidate.stores.join(", ") + ".", "hint"));
+    }
+    const use = (kind) => {
       const form = $("map-form");
       const fields = form.elements;
       fields.path.value = candidate.path;
-      fields.mode.value = candidate.kind;
+      fields.mode.value = kind;
       box.replaceChildren();
       updateMapSubmit(form);
     };
-    row.append(button(candidate.kind === "file" ? "Use this file" : "Use this folder", use));
+    if (candidate.expected) {
+      const actions = element("div", "", "actions");
+      for (const [kind, label] of [["directory", "Use expected folder"], ["file", "Use expected file"]]) {
+        if (mode === "auto" || mode === kind) actions.append(button(label, () => use(kind)));
+      }
+      row.append(actions);
+    } else {
+      row.append(button(candidate.kind === "file" ? "Use this file" : "Use this folder", () => use(candidate.kind)));
+    }
     box.append(row);
   }
 }
@@ -584,13 +599,18 @@ async function detectSaveLocation(form, data, id, isCurrent) {
   const candidates = discoveryCandidates(scan.results, data.mode);
   const exact = candidates.length === 1
     && !candidates[0].suggested
+    && !candidates[0].expected
     && candidates[0].title.toLowerCase() === data.title.trim().toLowerCase();
   if (exact) {
     data.path = candidates[0].path;
     data.mode = candidates[0].kind;
     return;
   }
-  renderMapCandidates(candidates.slice(0, 30));
+  renderMapCandidates(candidates.slice(0, 30), data.mode);
+  if (candidates.some((candidate) => candidate.expected)) {
+    $("map-candidates").prepend(element("p", "No save files found. Ludusavi lists these expected locations.", "hint"));
+    return;
+  }
   formError(form, candidates.some((candidate) => candidate.suggested)
     ? "Found possible saves in the Proton prefix. Choose the location that belongs to this game."
     : candidates.length ? "Choose one of the detected save locations, or enter the path manually."
