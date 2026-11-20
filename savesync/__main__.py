@@ -170,6 +170,7 @@ class Handler(BaseHTTPRequestHandler):
                 "/api/state": device_status,
                 "/api/settings": lambda: library.settings(data),
                 "/api/map": map_and_share,
+                "/api/rename-game": lambda: library.rename_game(data["id"], data["title"]),
                 "/api/review": lambda: cloud.review(data["id"]),
                 "/api/sync": lambda: {"message": cloud.sync(data)},
                 "/api/cloud": lambda: cloud.action(data),

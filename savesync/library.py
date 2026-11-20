@@ -36,6 +36,15 @@ def overlap(first, second):
     return first.is_relative_to(second) or second.is_relative_to(first)
 
 
+def game_title(value):
+    if not isinstance(value, str):
+        raise SaveError("Enter a title up to 160 characters.")
+    title = value.strip()
+    if not title or len(title) > 160 or any(ord(char) < 32 for char in title):
+        raise SaveError("Enter a title up to 160 characters.")
+    return title
+
+
 class Library:
     def __init__(self, directory):
         self.directory = directory.resolve()
@@ -102,12 +111,29 @@ class Library:
                 warning = str(error)
         for key, mapping in state["maps"].items():
             games.setdefault(key, {"id": key, "title": mapping["title"], "mode": mapping["mode"]})
+            if mapping.get("local_title"):
+                games[key]["title"] = mapping["local_title"]
         return {"device": state["device"], "platform": state["platform"], "shared": state["shared"],
                 "ludusavi": state["ludusavi"], "ludusavi_ready": find_ludusavi(state["ludusavi"]) is not None,
                 "warning": warning,
                 "games": [dict(info, path=state["maps"].get(key, {}).get("path", ""),
                                install=state["maps"].get(key, {}).get("install", ""))
                           for key, info in sorted(games.items(), key=lambda item: item[1]["title"].casefold())]}
+
+    def rename_game(self, game_id, title):
+        key = checked_id(game_id)
+        title = game_title(title)
+        state = self.state()
+        entry = state["maps"].get(key)
+        if entry is None:
+            game = next((item for item in self.games()["games"] if item["id"] == key), None)
+            if game is None:
+                raise SaveError("Choose a game from the SaveSync library.")
+            entry = {"id": key, "title": game["title"], "mode": game["mode"], "path": ""}
+            state["maps"][key] = entry
+        entry["local_title"] = title
+        write_json(self.config, state)
+        return {"id": key}
 
     def map_game(self, data):
         state = self.state()
@@ -126,9 +152,7 @@ class Library:
             else:
                 raise SaveError("The shared game ID is invalid.")
         else:
-            title = data["title"].strip()
-            if not title or len(title) > 160:
-                raise SaveError("Enter a title up to 160 characters.")
+            title = game_title(data["title"])
             mode = data.get("mode", "auto")
             if mode not in ("file", "directory", "auto"):
                 raise SaveError("Choose a file or folder.")
@@ -160,6 +184,14 @@ class Library:
         if not (game_dir / "game.json").is_file():
             write_json(game_dir / "game.json", game)
         entry = previous if previous and previous.get("path") == str(path) else dict(game, path=str(path))
+        if previous and previous.get("local_title"):
+            entry["local_title"] = previous["local_title"]
+        if game_id and data.get("title") and not (previous or {}).get("path"):
+            title = game_title(data["title"])
+            if title != game["title"]:
+                entry["local_title"] = title
+            else:
+                entry.pop("local_title", None)
         if install:
             entry["install"] = install
         elif not previous or not previous.get("install"):
@@ -181,8 +213,13 @@ class Library:
         match = None
         if game_id and ID.fullmatch(game_id):
             match = next((entry for entry in games if entry["id"] == game_id), None)
+        if match is None and install_str and not game_id:
+            match = next((entry for entry in games if entry["install"] == install_str), None)
         if match is None:
-            match = next((entry for entry in games if entry["title"].casefold() == title.casefold()), None)
+            match = next((entry for entry in games if title.casefold() in {
+                entry["title"].casefold(),
+                state["maps"].get(entry["id"], {}).get("title", "").casefold(),
+            }), None)
         gid = match["id"] if match else (game_id if game_id and ID.fullmatch(game_id) else uuid.uuid4().hex)
         mode = match["mode"] if match else "directory"
         if state["shared"]:

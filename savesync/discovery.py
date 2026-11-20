@@ -62,6 +62,7 @@ SKIP_DIR_NAMES = {
     "engine", "monobleedingedge", "managed", "resources", "node_modules",
     ".git", "shader", "shaders", "movies", "videos", "audio", "music", "textures",
 }
+PREFIX_SAVE_ROOTS = ("Documents", "Saved Games", "AppData/Local", "AppData/LocalLow", "AppData/Roaming")
 
 
 def _strip_quotes(value):
@@ -113,6 +114,43 @@ def scan_game_folder(folder, title=""):
         return []
     label = title.strip() or re.sub(r"-[0-9a-f]{8}$", "", root.name)
     return [{"title": label, "files": found}]
+
+
+def scan_prefix_save_candidates(prefix, title):
+    """Suggest save files from one game's prefix when its manifest has no match."""
+    root = Path(_strip_quotes(prefix)).expanduser()
+    if not root.is_absolute():
+        return []
+    users = root / "drive_c/users"
+    try:
+        if not users.resolve().is_relative_to(root.resolve()):
+            return []
+        profiles = list(users.iterdir())
+    except (OSError, RuntimeError):
+        return []
+    groups = []
+    for profile in profiles:
+        if profile.is_symlink() or not profile.is_dir():
+            continue
+        for name in PREFIX_SAVE_ROOTS:
+            root = profile / name
+            # Wine can redirect Documents to a folder shared with other games.
+            try:
+                inside = root.resolve().is_relative_to(profile.resolve())
+            except (OSError, RuntimeError):
+                continue
+            if not inside:
+                continue
+            for result in scan_game_folder(root, title):
+                result["files"] = [
+                    entry for entry in result["files"]
+                    if entry["folder"] != str(root) and not Path(entry["path"]).is_symlink()
+                ]
+                groups.append([result])
+    results = _merge_results(groups)
+    for result in results:
+        result["suggested"] = True
+    return results
 
 
 def _savesync_prefixes():

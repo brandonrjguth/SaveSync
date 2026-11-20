@@ -7,7 +7,7 @@ import threading
 from pathlib import Path
 
 from .cloud_sync import CloudSync
-from .discovery import find_prefix_saves, observe_prefix_saves, scan_saves
+from .discovery import find_prefix_saves, observe_prefix_saves, scan_prefix_save_candidates, scan_saves
 from .library import checked_id, clean_path, overlap
 from .snapshots import SaveError, path_kind, validate_names, write_json
 from .steam_shortcuts import add_steam_shortcut, decky_bridge_installed
@@ -33,6 +33,10 @@ def rank_executables(names):
 
 def queue_dir():
     return Path.home() / ".local/share/savesync/steam-queue"
+
+
+def transfer_prefix(key):
+    return Path.home() / ".local/share/savesync-prefixes" / checked_id(key)
 
 
 def save_hint(library, key, game_root):
@@ -97,18 +101,54 @@ class GameTransfers:
             game["can_detect"] = game["id"] in hints
         return state
 
+    def installed_prefix(self, game_id, install):
+        for path in sorted(self.receipts.glob("*.json")):
+            try:
+                record = json.loads(path.read_bytes())
+                save_id = (record.get("save") or {}).get("id")
+                if save_id == game_id or (install and record["target"] == install):
+                    prefix = transfer_prefix(path.stem) / "pfx"
+                    if (prefix / "drive_c").is_dir():
+                        return str(prefix)
+            except (OSError, ValueError, KeyError, AttributeError, TypeError, SaveError):
+                continue
+        return ""
+
     def discover_saves(self, data):
         state = self.library.state()
         title, prefix, install = (data.get(key, "").strip() for key in ("title", "prefix", "install"))
         game_id = data.get("id")
+        installed_prefix = ""
         if self.role == "deck" and game_id:
             game = state["maps"].get(checked_id(game_id))
             relative = self.prefix_hints().get(game_id)
             if game and relative:
-                matches = find_prefix_saves(game["title"], relative, game["mode"], prefix)
+                matches = find_prefix_saves(title or game["title"], relative, game["mode"], prefix)
                 if matches:
                     return matches
-        return scan_saves(state["ludusavi"], title, prefix, install)
+            if not prefix:
+                installed_prefix = self.installed_prefix(game_id, (game or {}).get("install", ""))
+                prefix = installed_prefix
+        try:
+            matches = scan_saves(state["ludusavi"], title, prefix, install)
+        except SaveError:
+            matches = scan_prefix_save_candidates(prefix, title) if prefix else []
+            if not matches:
+                raise
+            return matches
+        if installed_prefix:
+            roots = [Path(installed_prefix).resolve()]
+            if install:
+                roots.append(clean_path(install))
+            for result in matches:
+                result["files"] = [
+                    entry for entry in result["files"]
+                    if any(Path(entry["path"]).resolve().is_relative_to(root) for root in roots)
+                ]
+            matches = [result for result in matches if result["files"]]
+        if not matches and prefix:
+            return scan_prefix_save_candidates(prefix, title)
+        return matches
 
     def detect_save_location(self, data):
         self.only("deck")
@@ -174,7 +214,7 @@ class GameTransfers:
                 item["shortcut"] = json.loads(file.read_bytes()).get("status", "pending") if file.is_file() else ""
                 hint = record.get("save")
                 item["save_id"] = hint.get("id", "") if isinstance(hint, dict) else ""
-                prefix = Path.home() / ".local/share/savesync-prefixes" / record["id"] / "pfx"
+                prefix = transfer_prefix(record["id"]) / "pfx"
                 if isinstance(hint, dict) and hint.get("base") == "prefix" and (prefix / "drive_c").is_dir():
                     item["prefix"] = str(prefix)
                 result["installs"].append(item)
@@ -477,7 +517,7 @@ class GameTransfers:
         executable = target / record["exe"] if record["exe"] else None
         if executable is not None and path_kind(executable) != "file":
             raise SaveError("The downloaded executable is missing.")
-        prefix = Path.home() / ".local/share/savesync-prefixes" / key
+        prefix = transfer_prefix(key)
 
         # Set up the save location and library entry before making the shortcut visible to Steam.
         record["save_message"] = self.link_saves(record, target, prefix)

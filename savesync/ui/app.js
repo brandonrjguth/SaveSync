@@ -182,10 +182,13 @@ function openMap(game) {
   $("map-proton").open = false;
   $("map-proton").hidden = hasLocation || state?.platform !== "Linux";
   fields.mode.value = game?.mode || "auto";
-  fields.title.readOnly = Boolean(game);
+  fields.title.readOnly = hasLocation;
+  $("map-title-label").textContent = game && !hasLocation ? "Game title for save detection" : "Game title";
+  $("map-rename").hidden = !game || hasLocation;
+  $("map-rename").disabled = false;
   $("map-candidates").replaceChildren();
   $("map-heading").textContent = game ? "Set local save location" : "Add game";
-  form.querySelector('[type="submit"]').textContent = game ? "Save location" : "Add game";
+  updateMapSubmit(form);
   openDialog("map-dialog");
 }
 
@@ -525,13 +528,14 @@ function discoveryCandidates(results, mode) {
   const folders = new Map();
   const files = new Map();
   for (const result of results) {
+    const source = { title: result.title, suggested: Boolean(result.suggested) };
     for (const entry of result.files) {
-      if (mode !== "file" && !folders.has(entry.folder)) folders.set(entry.folder, result.title);
-      if (mode !== "directory" && !files.has(entry.path)) files.set(entry.path, result.title);
+      if (mode !== "file" && !folders.has(entry.folder)) folders.set(entry.folder, source);
+      if (mode !== "directory" && !files.has(entry.path)) files.set(entry.path, source);
     }
   }
-  return [...folders].map(([path, title]) => ({ title, path, kind: "directory" }))
-    .concat([...files].map(([path, title]) => ({ title, path, kind: "file" })));
+  return [...folders].map(([path, source]) => ({ ...source, path, kind: "directory" }))
+    .concat([...files].map(([path, source]) => ({ ...source, path, kind: "file" })));
 }
 
 function renderMapCandidates(candidates) {
@@ -542,10 +546,12 @@ function renderMapCandidates(candidates) {
     const row = element("div", "", "scan-file");
     row.append(element("div", (singleTitle ? "" : candidate.title + " · ") + candidate.path, "location"));
     const use = () => {
-      const fields = $("map-form").elements;
+      const form = $("map-form");
+      const fields = form.elements;
       fields.path.value = candidate.path;
       fields.mode.value = candidate.kind;
       box.replaceChildren();
+      updateMapSubmit(form);
     };
     row.append(button(candidate.kind === "file" ? "Use this file" : "Use this folder", use));
     box.append(row);
@@ -577,6 +583,7 @@ async function detectSaveLocation(form, data, id, isCurrent) {
   if (!isCurrent()) return;
   const candidates = discoveryCandidates(scan.results, data.mode);
   const exact = candidates.length === 1
+    && !candidates[0].suggested
     && candidates[0].title.toLowerCase() === data.title.trim().toLowerCase();
   if (exact) {
     data.path = candidates[0].path;
@@ -584,9 +591,10 @@ async function detectSaveLocation(form, data, id, isCurrent) {
     return;
   }
   renderMapCandidates(candidates.slice(0, 30));
-  formError(form, candidates.length
-    ? "Choose one of the detected save locations, or enter the path manually."
-    : "No existing saves were detected for this title. Enter the save location manually.");
+  formError(form, candidates.some((candidate) => candidate.suggested)
+    ? "Found possible saves in the Proton prefix. Choose the location that belongs to this game."
+    : candidates.length ? "Choose one of the detected save locations, or enter the path manually."
+      : "No saves found. Try the full store title or enter a save location.");
 }
 
 async function saveMapLocation(data) {
@@ -605,5 +613,29 @@ async function saveMapLocation(data) {
   await refresh(result.id);
 }
 
+function updateMapSubmit(form) {
+  const submit = form.querySelector('[type="submit"]');
+  submit.textContent = !form.dataset.game ? "Add game"
+    : form.elements.path.value.trim() ? "Save location" : "Detect saves";
+}
+
+$("map-form").elements.path.addEventListener("input", () => updateMapSubmit($("map-form")));
+$("map-rename").addEventListener("click", async (event) => {
+  const control = event.currentTarget;
+  const form = $("map-form");
+  if (!form.elements.title.reportValidity()) return;
+  control.disabled = true;
+  formError(form, "");
+  const session = mapSession;
+  try {
+    const { id } = await api("rename-game", { id: form.dataset.game, title: form.elements.title.value });
+    notice("Game title updated on this device.");
+    await refresh(id);
+  } catch (error) {
+    if (session === mapSession) formError(form, error.message);
+  } finally {
+    if (session === mapSession) control.disabled = false;
+  }
+});
 bindForm("map-form", (data) => saveMapLocation({ ...data }));
 refresh().catch((error) => notice(error.message, true));

@@ -84,7 +84,8 @@
   <dialog id="map-dialog">
     <form id="map-form">
       <div class="dialog-heading"><h2 id="map-heading">Add game</h2><button type="button" data-close aria-label="Close">×</button></div>
-      <label>Game title<input name="title" required maxlength="160"></label>
+      <label><span id="map-title-label">Game title</span><input name="title" required maxlength="160"></label>
+      <button id="map-rename" type="button" hidden>Save title</button>
       <label>Game install folder<input name="install" placeholder="Optional — e.g. D:\Games\Example or /home/deck/Games/Example"></label>
       <label>Save location<input name="path" placeholder="Leave blank to detect automatically, or enter an absolute path"></label>
       <details id="map-proton"><summary>Wine and Proton options</summary>
@@ -92,7 +93,7 @@
       </details>
       <input type="hidden" name="mode" value="auto">
       <div id="map-candidates" aria-live="polite"></div>
-      <p class="hint">The save location is detected from the title when Ludusavi is available. A dedicated save folder is recommended; sync applies all files in it, including deletions.</p>
+      <p class="hint">Use the full store title when searching for saves. Select a dedicated save folder because sync applies all files in it, including deletions.</p>
       <p class="form-error" role="alert" hidden></p>
       <footer><button type="button" data-close>Cancel</button><button type="submit" class="primary">Add game</button></footer>
     </form>

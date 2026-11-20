@@ -44,7 +44,7 @@ def entry(key):
 class Plugin:
     async def game_sync_state(self):
         maps = read(DATA / "device.json", {}).get("maps", {})
-        games = {key: info["title"] for key, info in maps.items() if info.get("path")}
+        games = {key: info.get("local_title") or info["title"] for key, info in maps.items() if info.get("path")}
         cached = read(CONFIG, {})
         bindings = {}
         for path in (DATA / "game-installs").glob("*.json"):
